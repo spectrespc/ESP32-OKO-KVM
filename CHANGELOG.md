@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-10-15
+
 ### Added
 - Dual telnet bridges: independent TCP→UART relays for UART0 and UART1, each
   with its own port (`telnet0_port`, `telnet1_port`) and enable flag.

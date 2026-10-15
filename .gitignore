@@ -16,6 +16,12 @@ __pycache__/
 *~
 .DS_Store
 
+# Generated artifacts and backups
+generated/
+*.orig
+*.bak
+*.rej
+
 # NOTE: managed_components/ and dependencies.lock are intentionally NOT
 # ignored. ESP-IDF recommends committing resolved component dependencies for
 # reproducible builds.
