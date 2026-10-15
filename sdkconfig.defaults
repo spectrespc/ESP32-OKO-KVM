@@ -1,0 +1,48 @@
+# sdkconfig.defaults
+# SDK configuration defaults for ESP32-C6 Gateway
+#
+# Only real Kconfig symbols are listed here. Symbols that IDF does not
+# define are silently ignored during configuration, so keep this list
+# minimal and verified.
+
+# ESP-IDF target
+CONFIG_IDF_TARGET=esp32c6
+
+# Console configuration (native USB Serial/JTAG)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# Main task
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_ESP_MAIN_TASK_AFFINITY=0
+
+# Flash size (ESP32-C6FH4 has 4MB embedded flash; default 2MB wastes half).
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Partition table - custom layout with a SPIFFS partition for the web UI
+# (see partitions.csv): 2.5M factory app + ~1.5M SPIFFS.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# SPIFFS (used to serve the SPA from flash)
+CONFIG_SPIFFS_MAX_PARTITIONS=1
+CONFIG_SPIFFS_CACHE=y
+CONFIG_SPIFFS_PAGE_SIZE=256
+CONFIG_SPIFFS_OBJ_NAME_LEN=32
+
+# FreeRTOS
+CONFIG_FREERTOS_HZ=100
+
+# FatFs: exFAT support is injected by patching fatfs/src/ffconf.h
+# (FF_FS_EXFAT=1) from main/CMakeLists.txt, because IDF v6.0.2 exposes no
+# Kconfig symbol for it. exFAT pulls in the volume-label code path, which
+# references FF_USE_LABEL; enable the backing Kconfig symbol so it expands to a
+# literal 1 rather than an undefined CONFIG_ token.
+CONFIG_FATFS_USE_LABEL=y
+
+# Logging (0=None, 1=Error, 2=Warn, 3=Info, 4=Debug, 5=Verbose)
+CONFIG_LOG_DEFAULT_LEVEL=3
+CONFIG_LOG_COLORS=y
+
+# MQTT over TLS (mqtts://) uses the default CA bundle from mbedTLS.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y

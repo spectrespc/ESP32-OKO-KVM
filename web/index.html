@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32-C6 Gateway</title>
+<style>
+:root{
+  --bg:#1a1a2e; --bg-2:#16213e; --card:#0f3460; --card-2:#1b2a4a;
+  --accent:#e94560; --accent-2:#ff6b81; --text:#eaeaea; --muted:#9aa4c0;
+  --ok:#4ade80; --warn:#fbbf24; --err:#e94560; --line:#243b6b;
+  --radius:14px; --shadow:0 6px 20px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:linear-gradient(160deg,#1a1a2e 0%,#121a30 100%);
+  color:var(--text); font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  min-height:100vh; font-size:15px;
+}
+header{
+  position:sticky; top:0; z-index:10;
+  background:rgba(15,52,96,.92); backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line); box-shadow:var(--shadow);
+}
+.topbar{display:flex;align-items:center;gap:14px;padding:12px 18px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.4px}
+.brand .dot{width:11px;height:11px;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 10px var(--accent-2)}
+.brand small{color:var(--muted);font-weight:400}
+nav{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+nav button{
+  background:transparent;color:var(--muted);border:1px solid transparent;
+  padding:8px 14px;border-radius:999px;cursor:pointer;font-size:14px;
+  transition:all .15s ease;
+}
+nav button:hover{color:var(--text);background:rgba(255,255,255,.05)}
+nav button.active{color:#fff;background:var(--accent);box-shadow:0 0 14px rgba(233,69,96,.45)}
+.conn{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.conn .led{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.conn.online .led{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.conn.offline .led{background:var(--err);box-shadow:0 0 8px var(--err)}
+main{padding:20px;max-width:1100px;margin:0 auto}
+h2{margin:0 0 16px;font-size:20px}
+h3{margin:0 0 12px;font-size:15px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.grid{display:grid;gap:16px}
+.grid.cols-2{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.grid.cols-3{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+.card{
+  background:linear-gradient(180deg,var(--card) 0%,var(--card-2) 100%);
+  border:1px solid var(--line);border-radius:var(--radius);
+  padding:16px;box-shadow:var(--shadow);
+}
+.card .metric{font-size:30px;font-weight:700;margin:6px 0 2px}
+.card .unit{font-size:14px;color:var(--muted);font-weight:400}
+.card .label{color:var(--muted);font-size:13px}
+.status-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px dashed var(--line)}
+.status-row:last-child{border-bottom:0}
+.badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;
+  padding:3px 10px;border-radius:999px;background:rgba(255,255,255,.06)}
+.badge.ok{color:var(--ok);background:rgba(74,222,128,.12)}
+.badge.off{color:var(--muted);background:rgba(154,164,192,.12)}
+.badge.err{color:var(--err);background:rgba(233,69,96,.14)}
+.badge.warn{color:var(--warn);background:rgba(251,191,36,.14)}
+.badge .led{width:7px;height:7px;border-radius:50%;background:currentColor}
+form .field{margin-bottom:14px}
+label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+input,select,textarea{
+  width:100%;background:#0b1830;border:1px solid var(--line);color:var(--text);
+  padding:10px 12px;border-radius:10px;font-size:14px;font-family:inherit;
+  transition:border-color .15s ease,box-shadow .15s ease;
+}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(233,69,96,.18)}
+textarea{min-height:120px;resize:vertical;font-family:ui-monospace,Menlo,Consolas,monospace}
+button.btn{
+  background:var(--accent);color:#fff;border:0;padding:11px 20px;border-radius:10px;
+  font-size:14px;font-weight:600;cursor:pointer;transition:transform .1s ease,box-shadow .15s ease;
+}
+button.btn:hover{box-shadow:0 0 16px rgba(233,69,96,.5)}
+button.btn:active{transform:translateY(1px)}
+button.btn.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+.toggle{display:flex;align-items:center;gap:12px;justify-content:space-between;
+  padding:10px 0;border-bottom:1px dashed var(--line)}
+.toggle:last-child{border-bottom:0}
+.switch{position:relative;width:46px;height:26px;flex:0 0 auto}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;background:#33405f;border-radius:999px;cursor:pointer;transition:.2s}
+.slider:before{content:"";position:absolute;height:20px;width:20px;left:3px;top:3px;
+  background:#fff;border-radius:50%;transition:.2s}
+.switch input:checked + .slider{background:var(--ok)}
+.switch input:checked + .slider:before{transform:translateX(20px)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+td input{padding:6px 8px}
+pre#logbox{
+  background:#070d1c;border:1px solid var(--line);border-radius:12px;
+  padding:14px;height:62vh;overflow:auto;margin:0;
+  font-family:ui-monospace,"Cascadia Code",Menlo,Consolas,monospace;
+  font-size:12.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word;
+}
+.spinner{width:22px;height:22px;border:3px solid rgba(255,255,255,.15);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;
+  display:inline-block;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+.empty{color:var(--muted);padding:24px;text-align:center}
+.toast{
+  position:fixed;right:18px;bottom:18px;max-width:min(420px,90vw);
+  background:#12203c;border:1px solid var(--line);border-left:4px solid var(--accent);
+  padding:12px 16px;border-radius:10px;box-shadow:var(--shadow);
+  transform:translateY(20px);opacity:0;transition:all .2s ease;pointer-events:none;
+  word-break:break-word;
+}
+.toast.show{transform:translateY(0);opacity:1}
+.toast.ok{border-left-color:var(--ok)}
+.toast.err{border-left-color:var(--err)}
+.muted{color:var(--muted)}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+.row .field{flex:1 1 180px;margin-bottom:0}
+.section{margin-bottom:22px}
+.net-item{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:12px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;
+  cursor:pointer;transition:border-color .15s ease,background .15s ease}
+.net-item:hover{border-color:var(--accent);background:rgba(233,69,96,.08)}
+.net-item .ssid{font-weight:600;word-break:break-all}
+.net-item .sub{font-size:12px;color:var(--muted);margin-top:2px}
+.bars{display:inline-flex;align-items:flex-end;gap:2px;height:16px}
+.bars i{width:4px;background:var(--muted);border-radius:1px}
+.bars i.on{background:var(--ok)}
+.bars i:nth-child(1){height:5px}.bars i:nth-child(2){height:9px}
+.bars i:nth-child(3){height:13px}.bars i:nth-child(4){height:16px}
+select.gpio option:disabled{color:#5a6a8a}
+select.gpio option.reserved{color:#e94560}
+select.gpio option.boot{color:var(--warn)}
+.modal{position:fixed;inset:0;background:rgba(5,10,22,.7);display:none;
+  align-items:center;justify-content:center;z-index:50;padding:18px}
+.modal.show{display:flex}
+.modal-card{background:linear-gradient(180deg,var(--card) 0%,var(--card-2) 100%);
+  border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);
+  padding:20px;width:min(420px,100%)}
+.icon-btn{background:transparent;border:0;color:var(--muted);cursor:pointer;font-size:18px}
+</style>
+</head>
+<body>
+<header>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> ESP32-C6 Gateway <small>web console</small></div>
+    <div class="conn" id="conn"><span class="led"></span><span id="conn-text">connecting…</span></div>
+    <nav id="nav">
+      <button data-page="dashboard">Dashboard</button>
+      <button data-page="config">Configuration</button>
+      <button data-page="wifi">WiFi</button>
+      <button data-page="sensors">Sensors</button>
+      <button data-page="sd">SD Card</button>
+      <button data-page="logs">System Log</button>
+    </nav>
+  </div>
+</header>
+<main id="page-content"></main>
+
+<div class="modal" id="wifi-modal">
+  <div class="modal-card">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h3 style="margin:0">Connect to <span id="wifi-modal-ssid" class="muted"></span></h3>
+      <button class="icon-btn" id="wifi-modal-close" title="Close">&times;</button>
+    </div>
+    <div class="field" style="margin-top:16px">
+      <label>Password</label>
+      <input type="password" id="wifi-modal-pass" placeholder="••••••••" autocomplete="off">
+    </div>
+    <div class="row">
+      <button class="btn" id="wifi-modal-connect">Connect</button>
+      <button class="btn ghost" id="wifi-modal-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="confirm-modal">
+  <div class="modal-card">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h3 style="margin:0" id="confirm-title">Confirm</h3>
+      <button class="icon-btn" id="confirm-close" title="Close">&times;</button>
+    </div>
+    <p id="confirm-message" class="muted" style="margin-top:14px"></p>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" id="confirm-ok">Confirm</button>
+      <button class="btn ghost" id="confirm-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ utils */
+const $ = (sel, root = document) => root.querySelector(sel);
+const pageEl = $("#page-content");
+const toastEl = $("#toast");
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+let toastTimer = null;
+function toast(msg, kind){
+  toastEl.textContent = msg;
+  toastEl.className = "toast show " + (kind || "");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.className = "toast " + (kind || ""); }, 4000);
+}
+
+function setConn(online){
+  const c = $("#conn");
+  c.classList.toggle("online", online);
+  c.classList.toggle("offline", !online);
+  $("#conn-text").textContent = online ? "connected" : "offline";
+}
+
+/* ---------------------------------------------------- confirm + system ops */
+let confirmHandler = null;
+function openConfirm(title, message, okLabel, onOk){
+  $("#confirm-title").textContent = title;
+  $("#confirm-message").textContent = message;
+  $("#confirm-ok").textContent = okLabel || "Confirm";
+  confirmHandler = onOk;
+  $("#confirm-modal").classList.add("show");
+}
+function closeConfirm(){
+  $("#confirm-modal").classList.remove("show");
+  confirmHandler = null;
+}
+function systemAction(path, busyMsg){
+  toast(busyMsg || "Working…", "ok");
+  // The device acknowledges then restarts, so a dropped connection is expected.
+  fetch(path, { method:"POST", headers:{"Content-Type":"application/json"}, body:"{}" })
+    .catch(() => {})
+    .finally(() => toast("Command sent. The device is restarting…", "ok"));
+}
+
+/* --------------------------------------------------------------- api client */
+async function fetchJSON(method, path, body){
+  const opts = { method, headers: {} };
+  if (body !== undefined){
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = typeof body === "string" ? body : JSON.stringify(body);
+  }
+  try{
+    const res = await fetch(path, opts);
+    const text = await res.text();
+    let data = null;
+    if (text){
+      try { data = JSON.parse(text); }
+      catch(e){ data = { raw: text }; }
+    }
+    setConn(true);
+    return { ok: res.ok, status: res.status, data };
+  }catch(err){
+    setConn(false);
+    return { ok:false, status:0, data:{ error:String(err) } };
+  }
+}
+
+/* ------------------------------------------------------------ polling manager */
+let pollers = [];
+function clearPollers(){
+  pollers.forEach(id => clearInterval(id));
+  pollers = [];
+}
+function poll(fn, ms){
+  fn();
+  pollers.push(setInterval(fn, ms));
+}
+
+/* ------------------------------------------------------------- spinner helper */
+function spinnerCard(msg){
+  return `<div class="card empty"><span class="spinner"></span> ${escapeHtml(msg || "Loading…")}</div>`;
+}
+
+/* ------------------------------------------------------------------- router */
+const routes = {
+  dashboard: renderDashboard,
+  config:    renderConfig,
+  wifi:      renderWifi,
+  sensors:   renderSensors,
+  sd:        renderSD,
+  logs:      renderLogs,
+};
+
+function updateNav(page){
+  document.querySelectorAll("#nav button").forEach(b =>
+    b.classList.toggle("active", b.dataset.page === page));
+}
+
+function navigate(){
+  const page = (location.hash || "#dashboard").slice(1);
+  const name = routes[page] ? page : "dashboard";
+  clearPollers();
+  updateNav(name);
+  window.scrollTo(0, 0);
+  routes[name]();
+}
+
+document.querySelectorAll("#nav button").forEach(b =>
+  b.addEventListener("click", () => { location.hash = "#" + b.dataset.page; }));
+window.addEventListener("hashchange", navigate);
+
+/* ------------------------------------------------------------- badge util */
+function badge(text, kind){
+  return `<span class="badge ${kind}"><span class="led"></span>${escapeHtml(text)}</span>`;
+}
+function enableBadge(v){ return v ? badge("enabled","ok") : badge("disabled","off"); }
+
+/* =============================================================== DASHBOARD */
+function renderDashboard(){
+  pageEl.innerHTML = `<h2>Dashboard</h2>
+    <div class="grid cols-3" id="dash-sub"></div>
+    <div class="grid cols-2 section" style="margin-top:16px">
+      <div class="card"><h3>Sensor readings</h3><div id="dash-sensor">${spinnerCard("reading sensors…")}</div></div>
+      <div class="card"><h3>Subsystem status</h3><div id="dash-status">${spinnerCard("loading…")}</div></div>
+    </div>
+    <div class="card section">
+      <h3>Device actions</h3>
+      <div class="row">
+        <button class="btn" id="dash-reboot">Reboot</button>
+        <button class="btn ghost" id="dash-reset">Reset Settings</button>
+      </div>
+      <p class="muted" style="margin-bottom:0">Reset Settings erases all saved configuration (NVS) and restarts the device.</p>
+    </div>`;
+
+  $("#dash-reboot").addEventListener("click", () => openConfirm(
+    "Reboot device",
+    "The gateway will restart and briefly go offline. Continue?",
+    "Reboot",
+    () => systemAction("/system/reboot", "Rebooting…")));
+  $("#dash-reset").addEventListener("click", () => openConfirm(
+    "Reset settings",
+    "All settings will be reset to factory defaults and the device will reboot. This cannot be undone.",
+    "Reset & Reboot",
+    () => systemAction("/system/reset", "Resetting…")));
+
+  async function refresh(){
+    const [cfgR, sensR, sdR, wifiR] = await Promise.all([
+      fetchJSON("GET", "/config"),
+      fetchJSON("GET", "/sensor"),
+      fetchJSON("GET", "/sd/status"),
+      fetchJSON("GET", "/wifi/status"),
+    ]);
+    renderSubsystems(cfgR, sdR, wifiR);
+    renderSensorReadings(sensR);
+  }
+  poll(refresh, 2000);
+}
+
+function renderSubsystems(cfgR, sdR, wifiR){
+  const cfg = cfgR.ok ? cfgR.data : {};
+  const wifi = (wifiR && wifiR.ok && wifiR.data) ? wifiR.data : {};
+  const sub = $("#dash-sub");
+  if (sub){
+    const items = [
+      ["UART0", cfg.uart0_enable],
+      ["UART1", cfg.uart1_enable],
+      ["Sensors", cfg.sensor_enable],
+      ["SD card", cfg.sd_enable],
+      ["LEDs", cfg.led_enable],
+      ["Telnet UART0", cfg.telnet0_enable],
+      ["Telnet UART1", cfg.telnet1_enable],
+    ];
+    let html = items.map(([name, v]) => `
+      <div class="card">
+        <div class="label">${name}</div>
+        <div style="margin-top:8px">${enableBadge(!!v)}</div>
+      </div>`).join("");
+
+    const staState = wifi.state || "idle";
+    const staKind = wifi.connected ? "ok" : (staState === "connecting" ? "warn" : "off");
+    html += `<div class="card">
+        <div class="label">WiFi STA</div>
+        <div style="margin-top:8px">${badge(wifi.connected ? "connected" : staState, staKind)}</div>
+        <div class="label" style="margin-top:6px">${escapeHtml(wifi.ssid || "—")}${wifi.connected && wifi.ip ? " · " + escapeHtml(wifi.ip) : ""}</div>
+      </div>`;
+    html += `<div class="card">
+        <div class="label">WiFi AP</div>
+        <div style="margin-top:8px">${badge("active","ok")}</div>
+        <div class="label" style="margin-top:6px">${escapeHtml(cfg.wifi_ssid || "ESP32-Gateway")}</div>
+      </div>`;
+    sub.innerHTML = html;
+  }
+
+  const st = $("#dash-status");
+  if (!st) return;
+  const sdReady = sdR.ok && sdR.data && sdR.data.status === "ready";
+  const sdTxt = !cfg.sd_enable ? "disabled"
+              : sdReady ? "ready"
+              : (sdR.data && sdR.data.error) ? sdR.data.error : "unavailable";
+  const sdKind = !cfg.sd_enable ? "off" : sdReady ? "ok" : "err";
+  st.innerHTML = `
+    <div class="status-row"><span>Configuration API</span>${cfgR.ok ? badge("reachable","ok") : badge("error","err")}</div>
+    <div class="status-row"><span>SD card</span>${badge(sdTxt, sdKind)}</div>
+    <div class="status-row"><span>Telnet UART0</span><span class="muted">${cfg.telnet0_enable ? "port "+cfg.telnet0_port : "disabled"}</span></div>
+    <div class="status-row"><span>Telnet UART1</span><span class="muted">${cfg.telnet1_enable ? "port "+cfg.telnet1_port : "disabled"}</span></div>
+    <div class="status-row"><span>MQTT</span><span class="muted">${cfg.mqtt_enable ? escapeHtml(cfg.mqtt_broker_url || "no URL") : "off"}</span></div>
+    <div class="status-row"><span>Server URL</span><span class="muted">${escapeHtml(cfg.server_url || "—")}</span></div>`;
+}
+
+/* Fixed-point sensor fields are scaled here to engineering units:
+   temperature/humidity are 0.1 units, bus voltage is mV, shunt µV, current mA,
+   power mW (see sensor_handler.h). Entries: label, JSON key, scale, unit,
+   decimals. */
+const SENSOR_FIELDS = [
+  ["Temperature",   "temperature",      10,   "°C",  1],
+  ["Humidity",      "humidity",         10,   "%",   1],
+  ["Pressure",      "pressure",         1,    "hPa", 0],
+  ["Light",         "light_level",      1,    "lx",  0],
+  ["Bus voltage",   "bus_voltage_mv",   1000, "V",   3],
+  ["Shunt voltage", "shunt_voltage_uv", 1,    "µV",  0],
+  ["Current",       "current_ma",       1,    "mA",  0],
+  ["Power",         "power_mw",         1,    "mW",  0],
+];
+function sensorValue(v, scale, unit, digits){
+  if (v === undefined || v === null) return "N/A";
+  return (scale && scale !== 1 ? (v / scale).toFixed(digits) : String(v)) + " " + unit;
+}
+
+function renderSensorReadings(sensR){
+  const box = $("#dash-sensor");
+  if (!box) return;
+  if (!sensR.ok){
+    box.innerHTML = `<div class="empty">Sensors unavailable (disabled or not initialized).</div>`;
+    return;
+  }
+  const d = sensR.data || {};
+  box.innerHTML = `<div class="grid cols-2">` + SENSOR_FIELDS.map(([label,key,scale,unit,digits]) => `
+    <div><div class="label">${label}</div>
+      <div class="metric">${escapeHtml(sensorValue(d[key], scale, unit, digits))}</div></div>`).join("") + `</div>`;
+}
+
+/* ================================================================ CONFIG */
+const PIN_FIELDS = [
+  ["uart0_tx","UART0 TX"],["uart0_rx","UART0 RX"],
+  ["uart1_tx","UART1 TX"],["uart1_rx","UART1 RX"],
+  ["sdspi_cs","SDSPI CS"],["sdspi_mosi","SDSPI MOSI"],
+  ["sdspi_miso","SDSPI MISO"],["sdspi_sclk","SDSPI SCLK"],
+  ["i2c_sda","I2C SDA"],["i2c_scl","I2C SCL"],
+  ["sensor_1","Sensor 1"],["sensor_2","Sensor 2"],
+  ["led_red","LED Red"],["led_green","LED Green"],
+];
+const ENABLE_FIELDS = [
+  ["uart0_enable","UART0"],["uart1_enable","UART1"],
+  ["sd_enable","SD card"],["sensor_enable","Sensors"],
+  ["led_enable","LEDs"],["telnet0_enable","Telnet UART0"],["telnet1_enable","Telnet UART1"],
+  ["uart0_sd_log","SD log UART0"],["uart1_sd_log","SD log UART1"],
+  ["sht21_sd_log","SD log SHT21"],["ina219_sd_log","SD log INA219"],
+  ["ina226_sd_log","SD log INA226"],["env_sd_log","SD log env"],
+];
+
+/* Hardcoded ESP32-C6 GPIO table (0-22). GPIO12/13 are the native USB D-/D+
+   lines (reserved while the USB Serial/JTAG console is active); GPIO2/8/9 are
+   boot strapping pins (usable but flagged). */
+const GPIO_TABLE = (() => {
+  const usb  = new Set([12, 13]);
+  const boot = new Set([2, 8, 9]);
+  const pins = [];
+  for (let n = 0; n <= 22; n++) pins.push({ n, usb: usb.has(n), boot: boot.has(n) });
+  return pins;
+})();
+
+function gpioLabel(p){
+  return "GPIO " + p.n + "  (I/O)" + (p.boot ? " ⚠ boot" : "") + (p.usb ? " [USB reserved]" : "");
+}
+
+/* Disables, in every GPIO dropdown, options that are USB-reserved or already
+   selected by a different field, so duplicates are impossible client-side. */
+function refreshPinOptions(){
+  const selects = Array.from(document.querySelectorAll("select.gpio"));
+  const chosen = {};
+  selects.forEach(s => { chosen[s.dataset.key] = parseInt(s.value, 10); });
+  selects.forEach(s => {
+    const mine = parseInt(s.value, 10);
+    const used = new Set(Object.entries(chosen)
+      .filter(([k]) => k !== s.dataset.key)
+      .map(([, v]) => v));
+    Array.from(s.options).forEach(o => {
+      const val = parseInt(o.value, 10);
+      const info = GPIO_TABLE[val];
+      o.disabled = (info && info.usb && val !== mine) || used.has(val);
+    });
+  });
+}
+
+async function renderConfig(){
+  pageEl.innerHTML = `<h2>Configuration</h2>${spinnerCard("Loading configuration…")}`;
+  const r = await fetchJSON("GET", "/config");
+  if (!r.ok){
+    pageEl.innerHTML = `<h2>Configuration</h2><div class="card empty">Failed to load configuration (HTTP ${r.status}).</div>`;
+    return;
+  }
+  const cfg = r.data;
+  const toggleHtml = ENABLE_FIELDS.map(([key,label]) => `
+    <div class="toggle">
+      <span>${label}</span>
+      <label class="switch"><input type="checkbox" id="cfg_${key}" ${cfg[key] ? "checked":""}><span class="slider"></span></label>
+    </div>`).join("");
+  const i2cToggle = (key,label) => `
+    <div class="toggle">
+      <span>${label}</span>
+      <label class="switch"><input type="checkbox" id="cfg_${key}" ${cfg[key] ? "checked":""}><span class="slider"></span></label>
+    </div>`;
+  const i2cSensorRow = (key,label,addrKey) => `
+    <div class="toggle">
+      <span>${label}</span>
+      <div style="display:flex;align-items:center;gap:10px">
+        <input type="text" id="cfg_${addrKey}" value="0x${(cfg[addrKey] || 0x40).toString(16).toUpperCase()}" style="width:84px;text-align:center">
+        <label class="switch"><input type="checkbox" id="cfg_${key}" ${cfg[key] ? "checked":""}><span class="slider"></span></label>
+      </div>
+    </div>`;
+  const i2cHtml = i2cToggle("i2c_enable","I2C bus")
+    + i2cToggle("sht21_enable","SHT21 (temp/humidity, fixed 0x40)")
+    + i2cSensorRow("ina219_enable","INA219 (current/power)","ina219_addr")
+    + i2cSensorRow("ina226_enable","INA226 (current/power)","ina226_addr");
+
+  const pinHtml = PIN_FIELDS.map(([key,label]) => {
+    const cur = cfg.pins ? cfg.pins[key] : 0;
+    const opts = GPIO_TABLE.map(p => {
+      const sel = (p.n === cur) ? " selected" : "";
+      const disabled = (p.usb && p.n !== cur) ? " disabled" : "";
+      const cls = p.boot ? "boot" : (p.usb ? "reserved" : "");
+      return `<option value="${p.n}" class="${cls}"${sel}${disabled}>${gpioLabel(p)}</option>`;
+    }).join("");
+    return `<tr><td>${label}</td>
+      <td><select class="gpio" data-key="${key}" id="pin_${key}">${opts}</select></td>
+      <td class="muted">${key}</td></tr>`;
+  }).join("");
+
+  pageEl.innerHTML = `<h2>Configuration</h2>
+    <form id="cfg-form">
+      <div class="grid cols-2">
+        <div class="card"><h3>Subsystems</h3>${toggleHtml}</div>
+        <div class="card">
+          <h3>Network &amp; services</h3>
+          <div class="field"><label>WiFi AP SSID</label>
+            <input type="text" id="cfg_wifi_ssid" value="${escapeHtml(cfg.wifi_ssid || "")}"></div>
+          <div class="field"><label>WiFi AP Password <span class="muted">(leave blank to keep current)</span></label>
+            <input type="password" id="cfg_wifi_password" placeholder="••••••••"></div>
+          <div class="field"><label>Server URL</label>
+            <input type="text" id="cfg_server_url" value="${escapeHtml(cfg.server_url || "")}"></div>
+          <div class="field"><label>Telnet UART0 port</label>
+            <input type="number" min="1" max="65535" id="cfg_telnet0_port" value="${cfg.telnet0_port || 2323}"></div>
+          <div class="field"><label>Telnet UART1 port</label>
+            <input type="number" min="1" max="65535" id="cfg_telnet1_port" value="${cfg.telnet1_port || 23}"></div>
+        </div>
+      </div>
+      <div class="card section" style="margin-top:16px">
+        <h3>MQTT</h3>
+        <div class="toggle">
+          <span>Enable MQTT</span>
+          <label class="switch"><input type="checkbox" id="cfg_mqtt_enable" ${cfg.mqtt_enable ? "checked":""}><span class="slider"></span></label>
+        </div>
+        <div class="field"><label>Broker URL</label>
+          <input type="text" id="cfg_mqtt_broker_url" value="${escapeHtml(cfg.mqtt_broker_url || "")}"
+                 placeholder="mqtt://192.168.1.100:1883"></div>
+        <div class="field"><label>Topic prefix</label>
+          <input type="text" id="cfg_mqtt_topic_prefix" value="${escapeHtml(cfg.mqtt_topic_prefix || "gateway")}"
+                 placeholder="gateway"></div>
+        <p class="muted" style="margin:8px 0 0">TLS: use mqtts:// in the URL (mqtts://broker:8883).</p>
+      </div>
+      <div class="card section" style="margin-top:16px">
+        <h3>I2C sensors</h3>
+        ${i2cHtml}
+        <p class="muted" style="margin:10px 0 0">Addresses accept hex 0x40-0x4F. Enable only one INA device; SHT21 is fixed at 0x40.</p>
+      </div>
+      <div class="card section" style="margin-top:16px">
+        <h3>GPIO pins</h3>
+        <table><thead><tr><th>Function</th><th>Pin</th><th>Key</th></tr></thead>
+        <tbody>${pinHtml}</tbody></table>
+      </div>
+      <button class="btn" type="submit">Save configuration</button>
+    </form>`;
+
+  document.querySelectorAll("select.gpio").forEach(s =>
+    s.addEventListener("change", refreshPinOptions));
+  refreshPinOptions();
+
+  $("#cfg-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const payload = { pins:{} };
+    ENABLE_FIELDS.forEach(([key]) => payload[key] = $("#cfg_"+key).checked ? 1 : 0);
+    ["i2c_enable","sht21_enable","ina219_enable","ina226_enable"].forEach(key =>
+      payload[key] = $("#cfg_"+key).checked ? 1 : 0);
+    payload.mqtt_enable = $("#cfg_mqtt_enable").checked ? 1 : 0;
+    const parseAddr = (key) => {
+      const n = parseInt(($("#cfg_"+key).value || "").trim(), 16);
+      return isNaN(n) ? -1 : n;
+    };
+    payload.ina219_addr = parseAddr("ina219_addr");
+    payload.ina226_addr = parseAddr("ina226_addr");
+    if (payload.ina219_addr < 0x40 || payload.ina219_addr > 0x4F ||
+        payload.ina226_addr < 0x40 || payload.ina226_addr > 0x4F){
+      toast("I2C address must be 0x40-0x4F.", "err");
+      return;
+    }
+    if (payload.ina219_enable && payload.ina226_enable){
+      toast("Enable only one of INA219 or INA226.", "err");
+      return;
+    }
+    if (payload.sht21_enable && payload.ina219_enable && payload.ina219_addr === 0x40){
+      toast("INA219 cannot use 0x40 while SHT21 is enabled.", "err");
+      return;
+    }
+    if (payload.sht21_enable && payload.ina226_enable && payload.ina226_addr === 0x40){
+      toast("INA226 cannot use 0x40 while SHT21 is enabled.", "err");
+      return;
+    }
+    payload.telnet0_port = parseInt($("#cfg_telnet0_port").value, 10);
+    payload.telnet1_port = parseInt($("#cfg_telnet1_port").value, 10);
+    payload.wifi_ssid = $("#cfg_wifi_ssid").value;
+    payload.server_url = $("#cfg_server_url").value;
+    payload.mqtt_broker_url = $("#cfg_mqtt_broker_url").value;
+    payload.mqtt_topic_prefix = $("#cfg_mqtt_topic_prefix").value;
+    const pw = $("#cfg_wifi_password").value;
+    if (pw) payload.wifi_password = pw;
+    PIN_FIELDS.forEach(([key]) => payload.pins[key] = parseInt($("#pin_"+key).value, 10) || 0);
+
+    const res = await fetchJSON("POST", "/config", payload);
+    if (res.ok){
+      toast((res.data && res.data.message) || "Configuration saved.", "ok");
+    }else{
+      const msg = (res.data && res.data.error) || ("HTTP " + res.status);
+      toast("Save failed: " + msg, "err");
+    }
+  });
+}
+
+/* ================================================================== WIFI */
+const AUTH_LABELS = {
+  0:"Open",1:"WEP",2:"WPA-PSK",3:"WPA2-PSK",4:"WPA/WPA2-PSK",
+  5:"WPA2-Enterprise",6:"WPA3-PSK",7:"WPA2/WPA3-PSK"
+};
+function authLabel(m){ return AUTH_LABELS[m] || ("Auth " + m); }
+
+function signalBars(rssi){
+  const level = rssi >= -55 ? 4 : rssi >= -65 ? 3 : rssi >= -75 ? 2 : 1;
+  return `<span class="bars">${[1,2,3,4].map(i =>
+    `<i class="${i <= level ? "on" : ""}"></i>`).join("")}</span>`;
+}
+
+let wifiModalSsid = null;
+function openWifiModal(ssid){
+  wifiModalSsid = ssid;
+  $("#wifi-modal-ssid").textContent = ssid;
+  $("#wifi-modal-pass").value = "";
+  $("#wifi-modal").classList.add("show");
+  $("#wifi-modal-pass").focus();
+}
+function closeWifiModal(){
+  $("#wifi-modal").classList.remove("show");
+  wifiModalSsid = null;
+}
+
+async function connectWifi(ssid, password){
+  const res = await fetchJSON("POST", "/wifi/connect", { ssid, password });
+  if (res.ok){
+    toast("Connecting to " + ssid + "…", "ok");
+  }else{
+    toast("Connect failed: " + ((res.data && res.data.error) || ("HTTP " + res.status)), "err");
+  }
+}
+
+function renderWifi(){
+  pageEl.innerHTML = `<h2>WiFi</h2>
+    <div class="grid cols-2 section">
+      <div class="card">
+        <h3>Connection</h3>
+        <div id="wifi-status">${spinnerCard("checking…")}</div>
+        <button class="btn ghost" id="wifi-disconnect" style="margin-top:14px">Disconnect</button>
+      </div>
+      <div class="card">
+        <h3>Available networks</h3>
+        <button class="btn" id="wifi-scan-btn">Scan</button>
+        <div id="wifi-list" style="margin-top:14px">
+          <div class="empty">Press Scan to search for networks.</div>
+        </div>
+      </div>
+    </div>`;
+
+  async function refreshStatus(){
+    const r = await fetchJSON("GET", "/wifi/status");
+    const box = $("#wifi-status");
+    if (!box) return;
+    if (!r.ok){
+      box.innerHTML = `<div class="empty">Status unavailable (HTTP ${r.status}).</div>`;
+      return;
+    }
+    const s = r.data || {};
+    const kind = s.connected ? "ok" : (s.state === "connecting" ? "warn" : "off");
+    box.innerHTML = `
+      <div class="status-row"><span>State</span>${badge(s.state || "idle", kind)}</div>
+      <div class="status-row"><span>Network</span><span>${escapeHtml(s.ssid || "—")}</span></div>
+      <div class="status-row"><span>IP address</span><span>${escapeHtml(s.ip || "—")}</span></div>
+      <div class="status-row"><span>Signal</span><span>${s.connected ? (signalBars(s.rssi) + " " + s.rssi + " dBm") : "—"}</span></div>`;
+  }
+
+  function renderNetworks(list, networks){
+    if (!networks.length){
+      list.innerHTML = `<div class="empty">No networks found.</div>`;
+      return;
+    }
+    list.innerHTML = networks.map(n => `
+      <div class="net-item" data-ssid="${escapeHtml(n.ssid)}" data-open="${n.authmode === 0 ? "1" : "0"}">
+        <div>
+          <div class="ssid">${escapeHtml(n.ssid || "(hidden)")}</div>
+          <div class="sub">${authLabel(n.authmode)} · ch ${n.channel}</div>
+        </div>
+        <div style="text-align:right">${signalBars(n.rssi)}<div class="sub">${n.rssi} dBm</div></div>
+      </div>`).join("");
+    list.querySelectorAll(".net-item").forEach(el =>
+      el.addEventListener("click", () => {
+        const ssid = el.dataset.ssid;
+        if (el.dataset.open === "1") connectWifi(ssid, "");
+        else openWifiModal(ssid);
+      }));
+  }
+
+  async function doScan(){
+    const list = $("#wifi-list");
+    if (!list) return;
+    list.innerHTML = `<div class="empty"><span class="spinner"></span> Scanning…</div>`;
+
+    const start = await fetchJSON("GET", "/wifi/scan");
+    if (!start.ok){
+      list.innerHTML = `<div class="empty">Scan failed (HTTP ${start.status}).</div>`;
+      return;
+    }
+
+    // The firmware runs the scan asynchronously (HTTP 202) so its HTTP server
+    // is not stalled; poll the cached results until they are ready.
+    for (let attempt = 0; attempt < 24; attempt++){
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const r = await fetchJSON("GET", "/wifi/scan/results");
+      if (!r.ok){
+        list.innerHTML = `<div class="empty">Scan failed (HTTP ${r.status}).</div>`;
+        return;
+      }
+      if (r.data && Array.isArray(r.data.networks)){
+        renderNetworks(list, r.data.networks);
+        return;
+      }
+    }
+    list.innerHTML = `<div class="empty">Scan timed out. Try again.</div>`;
+  }
+
+  $("#wifi-scan-btn").addEventListener("click", doScan);
+  $("#wifi-disconnect").addEventListener("click", async () => {
+    const res = await fetchJSON("POST", "/wifi/disconnect", {});
+    toast(res.ok ? "Disconnected." : ("Failed: HTTP " + res.status), res.ok ? "ok" : "err");
+    refreshStatus();
+  });
+
+  poll(refreshStatus, 3000);
+}
+
+/* =============================================================== SENSORS */
+function renderSensors(){
+  pageEl.innerHTML = `<h2>Sensors</h2>
+    <div class="grid cols-2 section">
+      <div class="card"><h3>Current readings</h3><div id="sens-now">${spinnerCard("reading…")}</div></div>
+      <div class="card"><h3>Send test data</h3>
+        <form id="sens-form">
+          <div class="field"><label>Temperature (°C)</label><input type="number" id="s_temperature" value="25"></div>
+          <div class="field"><label>Humidity (%)</label><input type="number" id="s_humidity" value="60"></div>
+          <div class="field"><label>Pressure (hPa)</label><input type="number" id="s_pressure" value="1013"></div>
+          <div class="field"><label>Light (lx)</label><input type="number" id="s_light_level" value="500"></div>
+          <div class="field"><label>Voltage (mV)</label><input type="number" id="s_voltage" value="3300"></div>
+          <button class="btn" type="submit">POST /sensor</button>
+        </form>
+      </div>
+    </div>`;
+
+  async function refresh(){
+    const r = await fetchJSON("GET", "/sensor");
+    const box = $("#sens-now");
+    if (!box) return;
+    if (!r.ok){
+      box.innerHTML = `<div class="empty">Sensors unavailable (disabled or not initialized).</div>`;
+      return;
+    }
+    const d = r.data || {};
+    box.innerHTML = SENSOR_FIELDS.map(([label,key,scale,unit,digits]) =>
+      `<div class="status-row"><span>${label}</span><span><b>${escapeHtml(sensorValue(d[key], scale, unit, digits))}</b></span></div>`).join("");
+  }
+
+  $("#sens-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = {
+      temperature: parseInt($("#s_temperature").value,10)||0,
+      humidity: parseInt($("#s_humidity").value,10)||0,
+      pressure: parseInt($("#s_pressure").value,10)||0,
+      light_level: parseInt($("#s_light_level").value,10)||0,
+      voltage: parseInt($("#s_voltage").value,10)||0,
+    };
+    const res = await fetchJSON("POST", "/sensor", body);
+    toast(res.ok ? "Test data sent." : ("Failed: HTTP " + res.status), res.ok ? "ok":"err");
+  });
+
+  poll(refresh, 2000);
+}
+
+/* =================================================================== SD */
+function renderSD(){
+  pageEl.innerHTML = `<h2>SD Card</h2>
+    <div class="grid cols-2">
+      <div class="card"><h3>Status</h3><div id="sd-status">${spinnerCard("checking…")}</div></div>
+      <div class="card"><h3>Write file</h3>
+        <form id="sd-form">
+          <div class="field"><label>Content (POST /sd/write)</label>
+            <textarea id="sd-data" placeholder="Text to append to upload.bin on the SD card"></textarea></div>
+          <button class="btn" type="submit">Write to SD</button>
+        </form>
+      </div>
+    </div>`;
+
+  async function refresh(){
+    const r = await fetchJSON("GET", "/sd/status");
+    const box = $("#sd-status");
+    if (!box) return;
+    if (r.ok && r.data && r.data.status === "ready"){
+      box.innerHTML = `<div class="status-row"><span>Card</span>${badge("ready","ok")}</div>
+        <p class="muted">SD card mounted and writable.</p>`;
+    }else{
+      const msg = (r.data && r.data.error) || ("HTTP " + r.status);
+      box.innerHTML = `<div class="status-row"><span>Card</span>${badge("unavailable","err")}</div>
+        <p class="muted">${escapeHtml(msg)}</p>`;
+    }
+  }
+
+  $("#sd-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = $("#sd-data").value;
+    if (!text){ toast("Nothing to write.", "err"); return; }
+    try{
+      const res = await fetch("/sd/write", { method:"POST", headers:{"Content-Type":"text/plain"}, body:text });
+      const body = await res.text();
+      let data = {}; try{ data = JSON.parse(body); }catch(_){}
+      if (res.ok){
+        toast("Written " + (data.written ?? text.length) + " bytes.", "ok");
+      }else{
+        toast("Write failed: " + (data.error || ("HTTP " + res.status)), "err");
+      }
+      setConn(true);
+    }catch(err){ setConn(false); toast("Write failed: " + err, "err"); }
+    refresh();
+  });
+
+  poll(refresh, 3000);
+}
+
+/* ================================================================= LOGS */
+const ANSI_COLORS = {30:"#6b7280",31:"#e94560",32:"#4ade80",33:"#fbbf24",34:"#60a5fa",
+  35:"#c084fc",36:"#22d3ee",37:"#eaeaea",90:"#9aa4c0",91:"#ff6b81",92:"#86efac",
+  93:"#fde047",94:"#93c5fd",95:"#d8b4fe",96:"#67e8f9",97:"#ffffff"};
+
+function ansiToHtml(str){
+  const esc = "\u001b";
+  let out = "";
+  let open = false;
+  // Split keeping the SGR codes as capture groups.
+  const parts = String(str).split(new RegExp(esc + "\\[([0-9;]*)m"));
+  for (let i = 0; i < parts.length; i++){
+    if (i % 2 === 0){
+      out += escapeHtml(parts[i]);
+    }else{
+      const codes = parts[i].split(";").filter(x => x !== "").map(Number);
+      for (const c of codes.length ? codes : [0]){
+        if (c === 0){ if (open){ out += "</span>"; open = false; } }
+        else if (ANSI_COLORS[c]){ if (open) out += "</span>"; out += `<span style="color:${ANSI_COLORS[c]}">`; open = true; }
+        else if (c === 1){ out += '<span style="font-weight:700">'; open = true; }
+      }
+    }
+  }
+  if (open) out += "</span>";
+  return out;
+}
+
+function renderLogs(){
+  pageEl.innerHTML = `<h2>System Log</h2>
+    <div class="card" style="padding:0;overflow:hidden">
+      <pre id="logbox">Loading logs…</pre>
+    </div>
+    <p class="muted" style="margin-top:10px">Polling <code>GET /logs</code> every second. Auto-scrolls while you are at the bottom.</p>`;
+
+  const box = $("#logbox");
+  let lastCount = -1;
+  let lastTail = null;
+
+  async function refresh(){
+    const r = await fetchJSON("GET", "/logs");
+    if (!r.ok || !r.data || !Array.isArray(r.data.logs)){
+      box.textContent = "Failed to load logs (HTTP " + r.status + ")";
+      return;
+    }
+    const logs = r.data.logs;
+    // The server ring buffer caps its length, so a fixed count does not mean
+    // the contents are unchanged. Detect updates by the newest line instead.
+    const tail = logs.length ? logs[logs.length - 1] : "";
+    if (logs.length === lastCount && tail === lastTail && box.dataset.rendered === "1"){
+      return;
+    }
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.innerHTML = logs.map(ansiToHtml).join("\n") || "<span class=\"muted\">(no log lines yet)</span>";
+    box.dataset.rendered = "1";
+    lastCount = logs.length;
+    lastTail = tail;
+    if (atBottom) box.scrollTop = box.scrollHeight;
+  }
+
+  poll(refresh, 1000);
+}
+
+/* ----------------------------------------------------------- wifi modal */
+$("#wifi-modal-close").addEventListener("click", closeWifiModal);
+$("#wifi-modal-cancel").addEventListener("click", closeWifiModal);
+$("#wifi-modal").addEventListener("click", e => {
+  if (e.target.id === "wifi-modal") closeWifiModal();
+});
+$("#wifi-modal-connect").addEventListener("click", async () => {
+  const ssid = wifiModalSsid;
+  const pw = $("#wifi-modal-pass").value;
+  closeWifiModal();
+  if (ssid) await connectWifi(ssid, pw);
+});
+$("#wifi-modal-pass").addEventListener("keydown", e => {
+  if (e.key === "Enter") $("#wifi-modal-connect").click();
+});
+
+/* --------------------------------------------------------- confirm modal */
+$("#confirm-close").addEventListener("click", closeConfirm);
+$("#confirm-cancel").addEventListener("click", closeConfirm);
+$("#confirm-modal").addEventListener("click", e => {
+  if (e.target.id === "confirm-modal") closeConfirm();
+});
+$("#confirm-ok").addEventListener("click", () => {
+  const fn = confirmHandler;
+  closeConfirm();
+  if (fn) fn();
+});
+
+/* ------------------------------------------------------------------- boot */
+navigate();
+</script>
+</body>
+</html>

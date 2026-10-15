@@ -1,0 +1,9 @@
+# Name,   Type, SubType, Offset,   Size,     Flags
+# Custom 4MB layout for the ESP32-C6 Gateway (ESP32-C6FH4, 4MB embedded flash).
+# Layout: 32K partition table @0x8000, 24K NVS, 8K otadata, 4K phy_init,
+# 2.5M factory app, remainder (~1.5M) SPIFFS for the web UI.
+nvs,      data, nvs,     0x9000,   0x6000,
+otadata,  data, ota,     0xF000,   0x2000,
+phy_init, data, phy,     0x11000,  0x1000,
+factory,  app,  factory, 0x20000,  0x280000,
+spiffs,   data, spiffs,  0x2A0000, 0x160000,

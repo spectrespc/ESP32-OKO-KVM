@@ -1,0 +1,8 @@
+## IDF Component Manager Manifest File
+## cJSON is pulled from the ESP Component Registry. The first build needs
+## network access; the resolved component is cached under managed_components/.
+## esp-mqtt moved out of IDF core into the registry in v6, so it is pulled here
+## (component name "mqtt", header "mqtt_client.h").
+dependencies:
+  espressif/cjson: "~1.7"
+  espressif/mqtt: "^1.0.0"

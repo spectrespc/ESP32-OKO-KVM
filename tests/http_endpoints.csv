@@ -1,0 +1,16 @@
+# HTTP endpoint expectations, shared by the on-device self-test
+# (via tools/gen_http_tests.py) and build_and_flash.sh (test command).
+# Format: METHOD,PATH,EXPECTED_STATUS
+GET,/config,200
+POST,/config,400
+GET,/sensor,200
+POST,/sensor,200
+GET,/sd/status,503
+POST,/sd/write,503
+GET,/logs,200
+GET,/wifi/status,200
+GET,/wifi/scan,202
+GET,/wifi/scan/results,200
+POST,/wifi/connect,400
+GET,/,200
+POST,/system/reboot,200

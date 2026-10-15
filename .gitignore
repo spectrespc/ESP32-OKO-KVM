@@ -1,0 +1,21 @@
+# ESP-IDF build artifacts
+build/
+sdkconfig
+sdkconfig.old
+
+# Python caches
+*.pyc
+__pycache__/
+
+# ESP-IDF tools (installed outside the project, but ignore if present)
+.espressif/
+
+# Editor / OS cruft
+*.swp
+*.swo
+*~
+.DS_Store
+
+# NOTE: managed_components/ and dependencies.lock are intentionally NOT
+# ignored. ESP-IDF recommends committing resolved component dependencies for
+# reproducible builds.
