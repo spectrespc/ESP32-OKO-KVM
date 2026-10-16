@@ -11,10 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Socket exhaustion (accept error 23 / ENFILE):** увеличен пул сокетов
-  (`CONFIG_LWIP_MAX_SOCKETS` 10→16 в `sdkconfig.defaults`) и включено
-  LRU-вытеснение в httpd (`lru_purge_enable = true`). Исправлена ситуация,
-  когда httpd (8 сокетов) + два telnet-listen (2 сокета) насыщали пул из
-  10 сокетов, вызывая отказ в обслуживании HTTP-клиентов.
+  (`CONFIG_LWIP_MAX_SOCKETS` 10→16 в `sdkconfig.defaults`), включено
+  LRU-вытеснение в httpd (`lru_purge_enable = true`) и поднят
+  `max_open_sockets` httpd с 7 до 10, чтобы расширенный пул был реально
+  задействован. Исправлена ситуация, когда httpd (8 сокетов) + два
+  telnet-listen (2 сокета) насыщали пул из 10 сокетов, вызывая отказ в
+  обслуживании HTTP-клиентов.
 
 ## [1.2.0] — 2026-10-16
 

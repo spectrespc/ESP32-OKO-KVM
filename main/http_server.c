@@ -427,7 +427,7 @@ void init_http_server(void)
     config.stack_size = 8192;
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.max_open_sockets = 7;
+    config.max_open_sockets = 10;
     config.max_uri_handlers = 20;
     config.max_resp_headers = 8;
     config.backlog_conn = 16;
