@@ -191,6 +191,34 @@ cmd_test() {
     if ! curl -sS -m 4 -o /dev/null "$TEST_HOST/sensor" 2>/dev/null; then
         echo "WARNING: $host is not reachable. Connect the host to the AP first." >&2
     fi
+
+    # Reset to factory defaults before testing so the destructive ext/reset and
+    # ext/power tests run against a known-clean configuration (both disabled).
+    # The device erases NVS and reboots; wait for it to come back.
+    echo "Factory-resetting device to known state..."
+    if curl -sS -m 5 -X POST "$TEST_HOST/system/reset" 2>/dev/null; then
+        echo "Reset command sent. Waiting for device to restart..."
+    else
+        echo "WARNING: Could not send reset command. Device may be in unknown state." >&2
+    fi
+
+    # Wait for the SoftAP to reappear (up to 60 seconds).
+    echo "Waiting for AP to become reachable..."
+    local waited=0 max_wait=60
+    while [ "$waited" -lt "$max_wait" ]; do
+        if curl -sS -m 2 -o /dev/null "$TEST_HOST/sensor" 2>/dev/null; then
+            echo "Device is back after ${waited}s."
+            break
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    if [ "$waited" -ge "$max_wait" ]; then
+        echo "ERROR: Device did not come back within ${max_wait}s." >&2
+        return 1
+    fi
+    echo
+
     # Expected responses reflect the current stub implementation.
     # The matrix is read from the shared CSV (single source of truth) that
     # also generates the on-device self-test table.
@@ -202,6 +230,9 @@ cmd_test() {
     local method path expected
     while IFS=, read -r method path expected || [ -n "$method" ]; do
         case "$method" in "" | "#"*) continue ;; esac
+        # Factory default state was already restored above; a mid-test
+        # reboot would break the remaining assertions.
+        case "$method $path" in "POST /system/reboot") continue ;; esac
         run_http_test "${method// /}" "${path// /}" "${expected// /}"
     done < <(tr -d '\r' < "$csv")
     echo
