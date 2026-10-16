@@ -35,8 +35,8 @@
   которая умеет сканировать и подключаться к внешней сети.
 - **HTTP REST API** на порту 80 с JSON-полезной нагрузкой.
 - **Веб-интерфейс** — одностраничное приложение, отдаваемое из раздела SPIFFS
-  (SD-карта не требуется), с 6 вкладками: Dashboard, Configuration, WiFi,
-  Sensors, SD Card и System Log.
+  (SD-карта не требуется), с 7 вкладками: Dashboard, Configuration, WiFi,
+  Sensors, SD Card, External и System Log.
 - **I2C-датчики** — SHT21 (температура / влажность) и INA219 / INA226
   (напряжение шины, напряжение шунта, ток, мощность).
 - **Постоянная конфигурация** в NVS с семантикой частичного обновления.
@@ -47,6 +47,9 @@
   и показания датчиков (`sht21.csv` / `ina219.csv` / `ina226.csv` / `env.csv`) с
   ротацией по 1 МБ на FatFs с поддержкой exFAT.
 - **Публикация датчиков в MQTT** (один JSON-топик на датчик, QoS 0).
+- **Управление внешним устройством** — два GPIO для питания (удерживаемый
+  уровень) и сброса (импульс заданной длительности), настраиваемая полярность,
+  персистентное состояние в NVS, веб-интерфейс с подтверждением операций.
 - **Кольцевой буфер системного лога**, доступный через `GET /logs`.
 - **Self-test**, проверяющий HTTP-эндпоинты при загрузке.
 - **Единый `build_and_flash.sh`** для build / flash / monitor / test / clean.
@@ -164,6 +167,9 @@ gateway/
 | POST  | `/wifi/disconnect`   | Разорвать связь STA и забыть учётные данные     | 200   |
 | POST  | `/system/reboot`     | Подтвердить, затем перезагрузить устройство     | 200   |
 | POST  | `/system/reset`      | Подтвердить, стереть NVS, затем перезагрузить   | 200   |
+| GET   | `/ext/status`        | Состояние внешнего устройства                   | 200   |
+| POST  | `/ext/power`         | Включить/выключить питание (`{"on":bool}`)      | 200/503 |
+| POST  | `/ext/reset`         | Отправить импульс сброса                        | 200/429/503 |
 
 Ошибки возвращаются с кодами `400 Bad Request` (некорректная нагрузка /
 недопустимые значения), `500 Internal Server Error` (сбой ввода-вывода) или
@@ -310,6 +316,27 @@ curl -X POST http://192.168.4.1/wifi/disconnect
 `{"connected":true,"ssid":"MyNetwork","ip":"192.168.1.42","rssi":-51,"state":"connected"}`.
 `POST /wifi/connect` без поля `ssid` возвращает `400`.
 
+### Управление внешним устройством
+
+```bash
+# Состояние подсистемы питания/сброса внешнего устройства
+curl http://192.168.4.1/ext/status
+curl -X POST http://192.168.4.1/ext/power \
+  -H 'Content-Type: application/json' -d '{"on":true}'
+curl -X POST http://192.168.4.1/ext/reset
+```
+
+`GET /ext/status` возвращает текущее состояние, например
+`{"power_enabled":true,"reset_enabled":true,"power_state":false,"power_pin":20,"reset_pin":21,"power_polarity":"active-high","reset_polarity":"active-low","reset_pulse_ms":100}`.
+`POST /ext/power` принимает `{"on":true|false}` и отвечает
+`{"power_state":true,"message":"Power ON"}`. `POST /ext/reset` отправляет импульс
+заданной длительности и отвечает `{"message":"Reset pulse sent (100ms)"}`.
+Оба POST-эндпоинта защищены CSRF-проверкой `Origin`, а сброс троттлится — не
+чаще одного импульса в 2 секунды (`429`). Если соответствующая подсистема
+отключена (`ext_pwr_enable` / `ext_rst_enable` = 0), возвращается `503`. Сброс
+выполняется синхронно в HTTP-обработчике и блокирует его на время импульса
+(до 5000 мс).
+
 ### Система
 
 ```bash
@@ -343,6 +370,8 @@ curl -X POST http://192.168.4.1/system/reset    # -> 200, стереть NVS, п
 | Sensor 2   | 9                 | IN/OUT      | Универсальный GPIO (strapping-пин)  |
 | LED red    | 14                | OUT         | Статусный светодиод                 |
 | LED green  | 15                | OUT         | Статусный светодиод                 |
+| Ext Power  | 20                | OUT         | Питание внешнего устройства         |
+| Ext Reset  | 21                | OUT         | Сброс внешнего устройства           |
 
 > **Примечание о USB-консоли:** GPIO 12 и 13 — это нативные линии USB D-/D+
 > ESP32-C6. Пока активен `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` (значение по
@@ -390,9 +419,9 @@ SHT21 и устройства INA делят адрес `0x40` по умолча
 SPA — это единый самодостаточный файл `web/index.html` (инлайн CSS + JS),
 встраиваемый в раздел SPIFFS на этапе сборки и отдаваемый обработчиком
 статики HTTP-сервера. Откройте **http://192.168.4.1** после подключения к AP.
-Доступно шесть вкладок: Dashboard, Configuration, WiFi, Sensors, SD Card и
-System Log. Вкладка Configuration строит выпадающие списки GPIO на клиенте из
-таблицы пинов ESP32-C6 и отключает пины, уже назначенные другой роли.
+Доступно семь вкладок: Dashboard, Configuration, WiFi, Sensors, SD Card,
+External и System Log. Вкладка Configuration строит выпадающие списки GPIO на
+клиенте из таблицы пинов ESP32-C6 и отключает пины, уже назначенные другой роли.
 
 ## Конфигурация
 
@@ -429,6 +458,12 @@ System Log. Вкладка Configuration строит выпадающие сп�
 | `mqtt_en`       | u8   | `0`          | Публикация в MQTT вкл/выкл         |
 | `mqtt_url`      | str  | (нет)        | URL брокера (`mqtt://` или `mqtts://`) |
 | `mqtt_topic`    | str  | (нет)        | Префикс топика (по умолчанию `gateway`) |
+| `ext_pwr_en`    | u8   | `0`          | Управление питанием внешнего устройства вкл/выкл |
+| `ext_rst_en`    | u8   | `0`          | Управление сбросом внешнего устройства вкл/выкл  |
+| `ext_pwr_pol`   | u8   | `1`          | Полярность питания (0=active-low, 1=active-high) |
+| `ext_rst_pol`   | u8   | `0`          | Полярность сброса (0=active-low, 1=active-high)  |
+| `ext_rst_ms`    | u32  | `100`        | Длительность импульса сброса, мс (10-5000)       |
+| `ext_pwr_st`    | u8   | `0`          | Состояние питания (0=OFF, 1=ON, персистентно)    |
 | `sta_ssid`      | str  | (нет)        | Сохранённый SSID станции (вкладка WiFi) |
 | `sta_password`  | str  | (нет)        | Сохранённый пароль станции         |
 
@@ -450,8 +485,9 @@ System Log. Вкладка Configuration строит выпадающие сп�
 
 - **Self-test:** выполняется автоматически при загрузке через внутренний AP и
   пишет результаты в консоль. Таблица ожиданий генерируется из
-  `tests/http_endpoints.csv`; разрушающие эндпоинты `/system/*` пропускаются,
-  чтобы устройство не перезагружалось посреди теста.
+  `tests/http_endpoints.csv`; разрушающие эндпоинты `/system/*` и `/ext/reset`
+  пропускаются, чтобы устройство не перезагружалось и не дёргало внешнее
+  устройство посреди теста.
 - **Матрица HTTP-эндпоинтов:** `./build_and_flash.sh test` выполняет каждую
   строку `tests/http_endpoints.csv` через `curl` по адресу `TEST_HOST`
   (по умолчанию `192.168.4.1`). Хост должен быть подключён к SoftAP.
@@ -480,8 +516,8 @@ writes to an SD card, and reads I2C environmental / power-monitoring sensors.
   scan and connect to an external network.
 - **HTTP REST API** on port 80 with JSON payloads.
 - **Web UI** — a single-page app served from an on-board SPIFFS partition
-  (no SD card required), with 6 tabs: Dashboard, Configuration, WiFi, Sensors,
-  SD Card and System Log.
+  (no SD card required), with 7 tabs: Dashboard, Configuration, WiFi, Sensors,
+  SD Card, External and System Log.
 - **I2C sensors** — SHT21 (temperature / humidity) and INA219 / INA226
   (bus voltage, shunt voltage, current, power).
 - **Persistent configuration** in NVS with partial-update semantics.
@@ -491,6 +527,9 @@ writes to an SD card, and reads I2C environmental / power-monitoring sensors.
   per-sensor readings (`sht21.csv` / `ina219.csv` / `ina226.csv` / `env.csv`),
   with 1 MB rotation, on an exFAT-capable FatFs.
 - **MQTT publishing** of sensor readings (one JSON topic per sensor, QoS 0).
+- **External device control** — two GPIOs for power (held level) and reset
+  (pulse of a configurable width), configurable polarity, power state persisted
+  in NVS, and a web UI with operation confirmation.
 - **System log ring buffer** exposed over `GET /logs`.
 - **Self-test framework** that validates the HTTP endpoints on boot.
 - **Unified `build_and_flash.sh`** for build / flash / monitor / test / clean.
@@ -606,6 +645,9 @@ is intended for a trusted local network (the SoftAP or your own Wi-Fi).
 | POST   | `/wifi/disconnect`   | Drop the STA link and forget credentials       | 200     |
 | POST   | `/system/reboot`     | Acknowledge, then reboot the device            | 200     |
 | POST   | `/system/reset`      | Acknowledge, erase NVS, then reboot            | 200     |
+| GET    | `/ext/status`        | External device power/reset state              | 200     |
+| POST   | `/ext/power`         | Turn external power on/off (`{"on":bool}`)     | 200/503 |
+| POST   | `/ext/reset`         | Send a reset pulse to the external device      | 200/429/503 |
 
 Error responses use `400 Bad Request` (malformed payload / invalid values),
 `500 Internal Server Error` (I/O failure) or `503 Service Unavailable`
@@ -747,6 +789,27 @@ curl -X POST http://192.168.4.1/wifi/disconnect
 `{"connected":true,"ssid":"MyNetwork","ip":"192.168.1.42","rssi":-51,"state":"connected"}`.
 `POST /wifi/connect` with a missing `ssid` returns `400`.
 
+### External Device Control
+
+```bash
+# Read the power/reset subsystem state
+curl http://192.168.4.1/ext/status
+curl -X POST http://192.168.4.1/ext/power \
+  -H 'Content-Type: application/json' -d '{"on":true}'
+curl -X POST http://192.168.4.1/ext/reset
+```
+
+`GET /ext/status` returns the current state, e.g.
+`{"power_enabled":true,"reset_enabled":true,"power_state":false,"power_pin":20,"reset_pin":21,"power_polarity":"active-high","reset_polarity":"active-low","reset_pulse_ms":100}`.
+`POST /ext/power` takes `{"on":true|false}` and replies
+`{"power_state":true,"message":"Power ON"}`. `POST /ext/reset` drives a reset
+pulse for the configured width and replies
+`{"message":"Reset pulse sent (100ms)"}`. Both POST endpoints share the
+same-origin CSRF guard, and reset is throttled to one pulse every 2 seconds
+(`429`). When the matching subsystem is disabled (`ext_pwr_enable` /
+`ext_rst_enable` = 0) the endpoint returns `503`. The reset runs synchronously
+in the HTTP handler and blocks it for the pulse width (up to 5000 ms).
+
 ### System
 
 ```bash
@@ -780,6 +843,8 @@ persisted to NVS.
 | Sensor 2    | 9            | IN/OUT    | Generic GPIO (strapping pin)       |
 | LED red     | 14           | OUT       | Status LED                         |
 | LED green   | 15           | OUT       | Status LED                         |
+| Ext Power   | 20           | OUT       | External device power              |
+| Ext Reset   | 21           | OUT       | External device reset              |
 
 > **USB console note:** GPIO 12 and 13 are the ESP32-C6 native USB D-/D+ lines.
 > While `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` (the default) they cannot be used
@@ -823,8 +888,8 @@ rejects a configuration where:
 
 The SPA is a single self-contained `web/index.html` (inline CSS + JS) baked into
 the SPIFFS partition at build time and served by the HTTP server's catch-all
-handler. Open **http://192.168.4.1** after joining the AP. It has six tabs:
-Dashboard, Configuration, WiFi, Sensors, SD Card and System Log. The
+handler. Open **http://192.168.4.1** after joining the AP. It has seven tabs:
+Dashboard, Configuration, WiFi, Sensors, SD Card, External and System Log. The
 Configuration tab renders GPIO dropdowns client-side from the ESP32-C6 pin table
 and disables pins already assigned to another role.
 
@@ -863,6 +928,12 @@ Configuration lives in the NVS `storage` namespace. Keys (≤15 chars):
 | `mqtt_en`       | u8   | `0`          | MQTT publishing on/off              |
 | `mqtt_url`      | str  | (unset)      | Broker URL (`mqtt://` or `mqtts://`)|
 | `mqtt_topic`    | str  | (unset)      | Topic prefix (default `gateway`)    |
+| `ext_pwr_en`    | u8   | `0`          | External power control on/off       |
+| `ext_rst_en`    | u8   | `0`          | External reset control on/off       |
+| `ext_pwr_pol`   | u8   | `1`          | Power polarity (0=active-low, 1=active-high) |
+| `ext_rst_pol`   | u8   | `0`          | Reset polarity (0=active-low, 1=active-high) |
+| `ext_rst_ms`    | u32  | `100`        | Reset pulse width, ms (10-5000)     |
+| `ext_pwr_st`    | u8   | `0`          | Persisted power state (0=OFF, 1=ON) |
 | `sta_ssid`      | str  | (unset)      | Saved station SSID (from WiFi tab)  |
 | `sta_password`  | str  | (unset)      | Saved station password              |
 
@@ -884,8 +955,9 @@ defaults).
 
 - **Self-test:** runs automatically on boot over the internal AP and logs the
   results to the console. The expectation table is generated from
-  `tests/http_endpoints.csv`; destructive `/system/*` endpoints are skipped so
-  the device does not reboot mid-test.
+  `tests/http_endpoints.csv`; destructive `/system/*` and `/ext/reset` endpoints
+  are skipped so the device does not reboot and the external device is not
+  disturbed mid-test.
 - **HTTP endpoint matrix:** `./build_and_flash.sh test` runs every row of
   `tests/http_endpoints.csv` with `curl` against `TEST_HOST`
   (default `192.168.4.1`). The host must be joined to the SoftAP.

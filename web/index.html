@@ -153,6 +153,7 @@ select.gpio option.boot{color:var(--warn)}
       <button data-page="wifi">WiFi</button>
       <button data-page="sensors">Sensors</button>
       <button data-page="sd">SD Card</button>
+      <button data-page="external">External</button>
       <button data-page="logs">System Log</button>
     </nav>
   </div>
@@ -288,6 +289,7 @@ const routes = {
   wifi:      renderWifi,
   sensors:   renderSensors,
   sd:        renderSD,
+  external:  renderExternal,
   logs:      renderLogs,
 };
 
@@ -324,6 +326,10 @@ function renderDashboard(){
       <div class="card"><h3>Subsystem status</h3><div id="dash-status">${spinnerCard("loading…")}</div></div>
     </div>
     <div class="card section">
+      <h3>External device</h3>
+      <div id="dash-ext">${spinnerCard("loading…")}</div>
+    </div>
+    <div class="card section">
       <h3>Device actions</h3>
       <div class="row">
         <button class="btn" id="dash-reboot">Reboot</button>
@@ -344,16 +350,56 @@ function renderDashboard(){
     () => systemAction("/system/reset", "Resetting…")));
 
   async function refresh(){
-    const [cfgR, sensR, sdR, wifiR] = await Promise.all([
+    const [cfgR, sensR, sdR, wifiR, extR] = await Promise.all([
       fetchJSON("GET", "/config"),
       fetchJSON("GET", "/sensor"),
       fetchJSON("GET", "/sd/status"),
       fetchJSON("GET", "/wifi/status"),
+      fetchJSON("GET", "/ext/status"),
     ]);
     renderSubsystems(cfgR, sdR, wifiR);
     renderSensorReadings(sensR);
+    renderDashboardExternal(extR);
   }
   poll(refresh, 2000);
+}
+
+function renderDashboardExternal(extR){
+  const box = $("#dash-ext");
+  if (!box) return;
+  if (!extR.ok){
+    box.innerHTML = `<div class="empty">Unavailable (HTTP ${extR.status}).</div>`;
+    return;
+  }
+  const s = extR.data || {};
+  const powerBadge = !s.power_enabled ? badge("disabled","off")
+                    : (s.power_state ? badge("ON","ok") : badge("OFF","off"));
+  box.innerHTML = `
+    <div class="status-row"><span>Power</span>${powerBadge}</div>
+    <div class="status-row"><span>Reset</span>${s.reset_enabled ? badge("ready","ok") : badge("disabled","off")}</div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn" id="dash-ext-toggle" ${s.power_enabled ? "" : "disabled"}>${s.power_state ? "Power OFF" : "Power ON"}</button>
+      <button class="btn ghost" id="dash-ext-reset" ${s.reset_enabled ? "" : "disabled"}>Reset</button>
+    </div>`;
+
+  const toggle = $("#dash-ext-toggle");
+  if (toggle) toggle.addEventListener("click", async () => {
+    const res = await fetchJSON("POST", "/ext/power", { on: !s.power_state });
+    toast(res.ok ? ((res.data && res.data.message) || "OK")
+                 : ("Failed: " + ((res.data && res.data.error) || ("HTTP " + res.status))),
+          res.ok ? "ok" : "err");
+  });
+  const rst = $("#dash-ext-reset");
+  if (rst) rst.addEventListener("click", () => openConfirm(
+    "Reset external device",
+    "A reset pulse will be sent to the external device. Continue?",
+    "Reset",
+    async () => {
+      const res = await fetchJSON("POST", "/ext/reset", {});
+      toast(res.ok ? ((res.data && res.data.message) || "Reset pulse sent")
+                   : ("Failed: " + ((res.data && res.data.error) || ("HTTP " + res.status))),
+            res.ok ? "ok" : "err");
+    }));
 }
 
 function renderSubsystems(cfgR, sdR, wifiR){
@@ -448,6 +494,7 @@ const PIN_FIELDS = [
   ["i2c_sda","I2C SDA"],["i2c_scl","I2C SCL"],
   ["sensor_1","Sensor 1"],["sensor_2","Sensor 2"],
   ["led_red","LED Red"],["led_green","LED Green"],
+  ["ext_pwr","External power"],["ext_rst","External reset"],
 ];
 const ENABLE_FIELDS = [
   ["uart0_enable","UART0"],["uart1_enable","UART1"],
@@ -523,6 +570,35 @@ async function renderConfig(){
     + i2cSensorRow("ina219_enable","INA219 (current/power)","ina219_addr")
     + i2cSensorRow("ina226_enable","INA226 (current/power)","ina226_addr");
 
+  const extToggle = (key,label) => `
+    <div class="toggle">
+      <span>${label}</span>
+      <label class="switch"><input type="checkbox" id="cfg_${key}" ${cfg[key] ? "checked":""}><span class="slider"></span></label>
+    </div>`;
+  const extPolarity = (key,label) => `
+    <div class="field"><label>${label}</label>
+      <div style="display:flex;gap:18px">
+        <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--text)">
+          <input type="radio" name="${key}" value="1" ${cfg[key] ? "checked":""} style="width:auto"> Active-high</label>
+        <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--text)">
+          <input type="radio" name="${key}" value="0" ${cfg[key] ? "" : "checked"} style="width:auto"> Active-low</label>
+      </div>
+    </div>`;
+  const extHtml = `
+    <div class="grid cols-2">
+      <div>
+        ${extToggle("ext_pwr_enable","External power control")}
+        ${extToggle("ext_rst_enable","External reset control")}
+      </div>
+      <div>
+        ${extPolarity("ext_pwr_pol","Power polarity")}
+        ${extPolarity("ext_rst_pol","Reset polarity")}
+        <div class="field"><label>Reset pulse width (ms, 10-5000)</label>
+          <input type="number" min="10" max="5000" id="cfg_ext_rst_pulse_ms" value="${cfg.ext_rst_pulse_ms || 100}"></div>
+      </div>
+    </div>
+    <p class="muted" style="margin:10px 0 0">Power and reset pins are chosen in the GPIO pins table below. Reset pulses are throttled to one every 2 seconds.</p>`;
+
   const pinHtml = PIN_FIELDS.map(([key,label]) => {
     const cur = cfg.pins ? cfg.pins[key] : 0;
     const opts = GPIO_TABLE.map(p => {
@@ -574,6 +650,10 @@ async function renderConfig(){
         <p class="muted" style="margin:10px 0 0">Addresses accept hex 0x40-0x4F. Enable only one INA device; SHT21 is fixed at 0x40.</p>
       </div>
       <div class="card section" style="margin-top:16px">
+        <h3>External device</h3>
+        ${extHtml}
+      </div>
+      <div class="card section" style="margin-top:16px">
         <h3>GPIO pins</h3>
         <table><thead><tr><th>Function</th><th>Pin</th><th>Key</th></tr></thead>
         <tbody>${pinHtml}</tbody></table>
@@ -617,6 +697,16 @@ async function renderConfig(){
     }
     payload.telnet0_port = parseInt($("#cfg_telnet0_port").value, 10);
     payload.telnet1_port = parseInt($("#cfg_telnet1_port").value, 10);
+    payload.ext_pwr_enable = $("#cfg_ext_pwr_enable").checked ? 1 : 0;
+    payload.ext_rst_enable = $("#cfg_ext_rst_enable").checked ? 1 : 0;
+    payload.ext_pwr_pol = $('input[name="ext_pwr_pol"]:checked').value === "1" ? 1 : 0;
+    payload.ext_rst_pol = $('input[name="ext_rst_pol"]:checked').value === "1" ? 1 : 0;
+    const extPulse = parseInt($("#cfg_ext_rst_pulse_ms").value, 10);
+    if (isNaN(extPulse) || extPulse < 10 || extPulse > 5000){
+      toast("Reset pulse width must be 10-5000 ms.", "err");
+      return;
+    }
+    payload.ext_rst_pulse_ms = extPulse;
     payload.wifi_ssid = $("#cfg_wifi_ssid").value;
     payload.server_url = $("#cfg_server_url").value;
     payload.mqtt_broker_url = $("#cfg_mqtt_broker_url").value;
@@ -856,6 +946,82 @@ function renderSD(){
   });
 
   poll(refresh, 3000);
+}
+
+/* ============================================================== EXTERNAL */
+function renderExternal(){
+  pageEl.innerHTML = `<h2>External device</h2>
+    <div class="grid cols-2">
+      <div class="card"><h3>Power</h3><div id="ext-power-box">${spinnerCard("loading…")}</div></div>
+      <div class="card"><h3>Reset</h3><div id="ext-reset-box">${spinnerCard("loading…")}</div></div>
+    </div>`;
+
+  function renderState(s){
+    const powerBox = $("#ext-power-box");
+    const resetBox = $("#ext-reset-box");
+    if (!powerBox || !resetBox) return;
+
+    if (!s.power_enabled){
+      powerBox.innerHTML = `<div class="status-row"><span>State</span>${badge("disabled","off")}</div>
+        <p class="muted" style="margin-bottom:0">Power control is disabled. Enable it under Configuration → External device.</p>`;
+    }else{
+      const on = !!s.power_state;
+      powerBox.innerHTML = `
+        <div class="status-row"><span>Status</span>${on ? badge("ON","ok") : badge("OFF","off")}</div>
+        <div class="status-row"><span>Pin</span><span class="muted">GPIO ${s.power_pin} (${escapeHtml(s.power_polarity)})</span></div>
+        <div class="toggle" style="border-bottom:0">
+          <span><b>${on ? "Power is ON" : "Power is OFF"}</b></span>
+          <label class="switch"><input type="checkbox" id="ext-power-toggle" ${on ? "checked":""}><span class="slider"></span></label>
+        </div>`;
+      $("#ext-power-toggle").addEventListener("change", async (e) => {
+        const want = e.target.checked;
+        const res = await fetchJSON("POST", "/ext/power", { on: want });
+        if (res.ok){
+          toast((res.data && res.data.message) || "OK", "ok");
+        }else{
+          toast("Failed: " + ((res.data && res.data.error) || ("HTTP " + res.status)), "err");
+          e.target.checked = !want;
+        }
+        refresh();
+      });
+    }
+
+    if (!s.reset_enabled){
+      resetBox.innerHTML = `<div class="status-row"><span>State</span>${badge("disabled","off")}</div>
+        <p class="muted" style="margin-bottom:0">Reset control is disabled. Enable it under Configuration → External device.</p>`;
+    }else{
+      resetBox.innerHTML = `
+        <div class="status-row"><span>Status</span>${badge("ready","ok")}</div>
+        <div class="status-row"><span>Pulse width</span><span class="muted">${s.reset_pulse_ms} ms</span></div>
+        <div class="status-row"><span>Pin</span><span class="muted">GPIO ${s.reset_pin} (${escapeHtml(s.reset_polarity)})</span></div>
+        <button class="btn" id="ext-reset-btn" style="margin-top:12px">Reset</button>`;
+      $("#ext-reset-btn").addEventListener("click", () => openConfirm(
+        "Reset external device",
+        "A reset pulse will be sent to the external device. Continue?",
+        "Reset",
+        async () => {
+          const res = await fetchJSON("POST", "/ext/reset", {});
+          toast(res.ok ? ((res.data && res.data.message) || "Reset pulse sent")
+                       : ("Failed: " + ((res.data && res.data.error) || ("HTTP " + res.status))),
+                res.ok ? "ok" : "err");
+        }));
+    }
+  }
+
+  async function refresh(){
+    const r = await fetchJSON("GET", "/ext/status");
+    if (!r.ok){
+      const msg = (r.data && r.data.error) || ("HTTP " + r.status);
+      ["#ext-power-box","#ext-reset-box"].forEach(sel => {
+        const b = $(sel);
+        if (b) b.innerHTML = `<div class="empty">Unavailable (${escapeHtml(msg)}).</div>`;
+      });
+      return;
+    }
+    renderState(r.data || {});
+  }
+
+  poll(refresh, 2000);
 }
 
 /* ================================================================= LOGS */

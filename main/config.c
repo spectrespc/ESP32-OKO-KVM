@@ -57,6 +57,21 @@ static void set_pin_defaults(pin_config_t* p)
     p->sensor_2   = PIN_DEFAULT_SENSOR_2;
     p->led_red    = PIN_DEFAULT_LED_RED;
     p->led_green  = PIN_DEFAULT_LED_GREEN;
+    p->ext_pwr    = PIN_DEFAULT_EXT_PWR;
+    p->ext_rst    = PIN_DEFAULT_EXT_RST;
+}
+
+// Factory defaults for the external-control scalars. Applied only on the
+// degraded paths where NVS is unavailable, so a later config save/validate
+// still sees in-range values.
+static void set_ext_defaults(void)
+{
+    app_config.ext_pwr_enable   = 0;
+    app_config.ext_rst_enable   = 0;
+    app_config.ext_rst_pulse_ms = EXT_RST_PULSE_MS_DEFAULT;
+    app_config.ext_pwr_pol      = EXT_PWR_POL_DEFAULT;
+    app_config.ext_rst_pol      = EXT_RST_POL_DEFAULT;
+    app_config.ext_pwr_state    = 0;
 }
 
 void init_config(void)
@@ -68,6 +83,7 @@ void init_config(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
         set_pin_defaults(&app_config.pins);
+        set_ext_defaults();
         return;
     }
 
@@ -118,6 +134,12 @@ char* get_config_json(void)
                             app_config.mqtt_broker_url ? app_config.mqtt_broker_url : "");
     cJSON_AddStringToObject(root, "mqtt_topic_prefix",
                             app_config.mqtt_topic_prefix ? app_config.mqtt_topic_prefix : "");
+    cJSON_AddNumberToObject(root, "ext_pwr_enable", app_config.ext_pwr_enable);
+    cJSON_AddNumberToObject(root, "ext_rst_enable", app_config.ext_rst_enable);
+    cJSON_AddNumberToObject(root, "ext_rst_pulse_ms", app_config.ext_rst_pulse_ms);
+    cJSON_AddNumberToObject(root, "ext_pwr_pol", app_config.ext_pwr_pol);
+    cJSON_AddNumberToObject(root, "ext_rst_pol", app_config.ext_rst_pol);
+    cJSON_AddNumberToObject(root, "ext_pwr_state", app_config.ext_pwr_state);
 
     cJSON* pins = cJSON_CreateObject();
     if (pins) {
@@ -135,6 +157,8 @@ char* get_config_json(void)
         cJSON_AddNumberToObject(pins, "sensor_2", app_config.pins.sensor_2);
         cJSON_AddNumberToObject(pins, "led_red", app_config.pins.led_red);
         cJSON_AddNumberToObject(pins, "led_green", app_config.pins.led_green);
+        cJSON_AddNumberToObject(pins, "ext_pwr", app_config.pins.ext_pwr);
+        cJSON_AddNumberToObject(pins, "ext_rst", app_config.pins.ext_rst);
         cJSON_AddItemToObject(root, "pins", pins);
     }
 
@@ -280,6 +304,30 @@ bool config_validate_and_set(app_config_t* candidate, char* err_buf, size_t err_
         return false;
     }
 
+    // External device control: pulse width and polarity ranges. Pin capability,
+    // duplicate detection and the USB-console conflict are covered by
+    // validate_pin_config() above (ext_pwr/ext_rst are validated even when the
+    // subsystem is disabled).
+    if (candidate->ext_rst_pulse_ms < 10 || candidate->ext_rst_pulse_ms > 5000) {
+        if (err_buf && err_buf_len) {
+            snprintf(err_buf, err_buf_len,
+                     "EXT_INVALID: ext_rst_pulse_ms must be 10-5000");
+        }
+        return false;
+    }
+    if (candidate->ext_pwr_pol > 1) {
+        if (err_buf && err_buf_len) {
+            snprintf(err_buf, err_buf_len, "EXT_INVALID: ext_pwr_pol must be 0 or 1");
+        }
+        return false;
+    }
+    if (candidate->ext_rst_pol > 1) {
+        if (err_buf && err_buf_len) {
+            snprintf(err_buf, err_buf_len, "EXT_INVALID: ext_rst_pol must be 0 or 1");
+        }
+        return false;
+    }
+
     set_config(candidate);
     return true;
 }
@@ -366,6 +414,19 @@ void save_config(void)
     save_pin(s_nvs_handle, "pin_sensor_2", app_config.pins.sensor_2);
     save_pin(s_nvs_handle, "pin_led_red", app_config.pins.led_red);
     save_pin(s_nvs_handle, "pin_led_green", app_config.pins.led_green);
+    save_pin(s_nvs_handle, "ext_pwr_pin", app_config.pins.ext_pwr);
+    save_pin(s_nvs_handle, "ext_rst_pin", app_config.pins.ext_rst);
+
+    // External device power/reset control.
+    save_u8(s_nvs_handle, "ext_pwr_en", app_config.ext_pwr_enable);
+    save_u8(s_nvs_handle, "ext_rst_en", app_config.ext_rst_enable);
+    save_u8(s_nvs_handle, "ext_pwr_pol", app_config.ext_pwr_pol);
+    save_u8(s_nvs_handle, "ext_rst_pol", app_config.ext_rst_pol);
+    save_u8(s_nvs_handle, "ext_pwr_st", app_config.ext_pwr_state);
+    err = nvs_set_u32(s_nvs_handle, "ext_rst_ms", app_config.ext_rst_pulse_ms);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save ext_rst_ms: %s", esp_err_to_name(err));
+    }
 
     // Save strings - they need to be handled differently
     if (app_config.wifi_ssid) {
@@ -418,6 +479,7 @@ void load_config(void)
 {
     if (!s_nvs_handle) {
         set_pin_defaults(&app_config.pins);
+        set_ext_defaults();
         return;
     }
 
@@ -592,6 +654,33 @@ void load_config(void)
     app_config.pins.sensor_2   = load_pin(s_nvs_handle, "pin_sensor_2", PIN_DEFAULT_SENSOR_2);
     app_config.pins.led_red    = load_pin(s_nvs_handle, "pin_led_red", PIN_DEFAULT_LED_RED);
     app_config.pins.led_green  = load_pin(s_nvs_handle, "pin_led_green", PIN_DEFAULT_LED_GREEN);
+    app_config.pins.ext_pwr    = load_pin(s_nvs_handle, "ext_pwr_pin", PIN_DEFAULT_EXT_PWR);
+    app_config.pins.ext_rst    = load_pin(s_nvs_handle, "ext_rst_pin", PIN_DEFAULT_EXT_RST);
+
+    // External device power/reset control; disabled by default with safe
+    // defaults so the pins stay valid even before the feature is enabled.
+    if (nvs_get_u8(s_nvs_handle, "ext_pwr_en", &app_config.ext_pwr_enable) != ESP_OK) {
+        app_config.ext_pwr_enable = 0;
+    }
+    if (nvs_get_u8(s_nvs_handle, "ext_rst_en", &app_config.ext_rst_enable) != ESP_OK) {
+        app_config.ext_rst_enable = 0;
+    }
+    if (nvs_get_u32(s_nvs_handle, "ext_rst_ms", &app_config.ext_rst_pulse_ms) != ESP_OK ||
+        app_config.ext_rst_pulse_ms < 10 || app_config.ext_rst_pulse_ms > 5000) {
+        app_config.ext_rst_pulse_ms = EXT_RST_PULSE_MS_DEFAULT;
+    }
+    if (nvs_get_u8(s_nvs_handle, "ext_pwr_pol", &app_config.ext_pwr_pol) != ESP_OK ||
+        app_config.ext_pwr_pol > 1) {
+        app_config.ext_pwr_pol = EXT_PWR_POL_DEFAULT;
+    }
+    if (nvs_get_u8(s_nvs_handle, "ext_rst_pol", &app_config.ext_rst_pol) != ESP_OK ||
+        app_config.ext_rst_pol > 1) {
+        app_config.ext_rst_pol = EXT_RST_POL_DEFAULT;
+    }
+    if (nvs_get_u8(s_nvs_handle, "ext_pwr_st", &app_config.ext_pwr_state) != ESP_OK ||
+        app_config.ext_pwr_state > 1) {
+        app_config.ext_pwr_state = 0;
+    }
 
     // Load strings
     size_t ssid_len = 0;
@@ -651,4 +740,24 @@ void load_config(void)
 
     config_loaded = true;
     ESP_LOGI(TAG, "Configuration loaded");
+}
+
+void config_set_ext_power_state(uint8_t on)
+{
+    app_config.ext_pwr_state = on ? 1 : 0;
+
+    if (!s_nvs_handle) {
+        ESP_LOGW(TAG, "NVS not open; external power state not persisted");
+        return;
+    }
+
+    esp_err_t err = nvs_set_u8(s_nvs_handle, "ext_pwr_st", app_config.ext_pwr_state);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save ext_pwr_st: %s", esp_err_to_name(err));
+        return;
+    }
+    err = nvs_commit(s_nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to commit ext_pwr_st: %s", esp_err_to_name(err));
+    }
 }

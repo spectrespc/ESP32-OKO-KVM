@@ -8,9 +8,9 @@ JSON, если не указано иное.
 - **Аутентификация:** отсутствует. Устройство рассчитано на доверенную
   локальную сеть (SoftAP или ваша собственная сеть Wi-Fi). **Не выставляйте
   устройство в открытый интернет.**
-- **CSRF:** разрушающие эндпоинты `/system/*` проверяют заголовок `Origin` и
-  отклоняют кросс-доменные запросы (`403`). Запросы без `Origin` (например
-  `curl`) разрешены.
+- **CSRF:** разрушающие эндпоинты `/system/*`, `/ext/power` и `/ext/reset`
+  проверяют заголовок `Origin` и отклоняют кросс-доменные запросы (`403`).
+  Запросы без `Origin` (например `curl`) разрешены.
 
 ## Сводная таблица эндпоинтов
 
@@ -31,6 +31,9 @@ JSON, если не указано иное.
 | POST | `/wifi/disconnect` | 200 | Разорвать связь STA и забыть учётные данные |
 | POST | `/system/reboot` | 200 | Перезагрузить устройство |
 | POST | `/system/reset` | 200 | Стереть NVS и перезагрузить |
+| GET | `/ext/status` | 200 | Состояние внешнего устройства |
+| POST | `/ext/power` | 200 | Включить/выключить питание внешнего устройства |
+| POST | `/ext/reset` | 200 | Импульс сброса внешнего устройства |
 | GET | `/*` | 200 | Отдача статики из SPIFFS (catch-all) |
 
 ## Коды ошибок и статусы
@@ -42,10 +45,11 @@ JSON, если не указано иное.
 | `200 OK` | Успех |
 | `202 Accepted` | Асинхронная операция запущена (сканирование Wi-Fi) |
 | `400 Bad Request` | Некорректный JSON, недопустимые значения, пустое тело |
-| `403 Forbidden` | Кросс-доменный запрос к `/system/*` |
+| `403 Forbidden` | Кросс-доменный запрос к `/system/*`, `/ext/power` или `/ext/reset` |
 | `404 Not Found` | Ресурс не найден (статика; корень с `Accept: application/json`) |
+| `429 Too Many Requests` | Троттлинг сброса внешнего устройства (реже одного импульса в 2 с) |
 | `500 Internal Server Error` | Сбой ввода-вывода / сериализации |
-| `503 Service Unavailable` | Подсистема отключена (например SD) или SPIFFS не смонтирован |
+| `503 Service Unavailable` | Подсистема отключена (например SD или внешнее управление) либо SPIFFS не смонтирован |
 
 ### Машиночитаемые коды в поле `"error"`
 
@@ -64,6 +68,7 @@ JSON, если не указано иное.
 | `PORT_CONFLICT` | Оба telnet-моста включены на одном порту |
 | `UART_INVALID` | Telnet-мост включён при выключенном UART |
 | `MQTT_INVALID` | MQTT включён без непустого URL брокера (≤255 символов) |
+| `EXT_INVALID` | `ext_rst_pulse_ms` вне диапазона 10–5000; `ext_pwr_pol` / `ext_rst_pol` не `0`/`1` |
 
 Помимо кодов, `POST /config` может вернуть `400` с текстовым `"error"`:
 `Invalid JSON`, `Failed to read request body`, `No valid configuration fields
@@ -109,19 +114,28 @@ curl http://192.168.4.1/config
   "mqtt_enable": 0,
   "mqtt_broker_url": "",
   "mqtt_topic_prefix": "",
+  "ext_pwr_enable": 0,
+  "ext_rst_enable": 0,
+  "ext_rst_pulse_ms": 100,
+  "ext_pwr_pol": 1,
+  "ext_rst_pol": 0,
+  "ext_pwr_state": 0,
   "pins": {
     "uart0_tx": 16, "uart0_rx": 17,
     "uart1_tx": 4,  "uart1_rx": 5,
     "sdspi_cs": 10, "sdspi_mosi": 11, "sdspi_miso": 18, "sdspi_sclk": 19,
     "i2c_sda": 6,   "i2c_scl": 7,
     "sensor_1": 8,  "sensor_2": 9,
-    "led_red": 14,  "led_green": 15
+    "led_red": 14,  "led_green": 15,
+    "ext_pwr": 20,  "ext_rst": 21
   }
 }
 ```
 
 - Адреса INA возвращаются в десятичном виде (`64` = `0x40`).
 - Пароль AP (`wifi_password`) намеренно не выдаётся.
+- Поле `ext_pwr_state` доступно только для чтения: оно меняется лишь через
+  `POST /ext/power`.
 
 ## `POST /config`
 
@@ -414,8 +428,8 @@ curl -X POST http://192.168.4.1/system/reset
 
 ### CSRF-защита
 
-`/system/reboot` и `/system/reset` сравнивают хост из заголовка `Origin` с
-заголовком `Host`. При несовпадении возвращается `403`:
+`/system/reboot`, `/system/reset`, `/ext/power` и `/ext/reset` сравнивают хост из
+заголовка `Origin` с заголовком `Host`. При несовпадении возвращается `403`:
 
 ```json
 {"error":"Cross-origin request rejected"}
@@ -423,6 +437,89 @@ curl -X POST http://192.168.4.1/system/reset
 
 Запросы без заголовка `Origin` (например `curl`) разрешены, так как эндпоинт
 доступен только в локальной сети.
+
+## Управление внешним устройством
+
+Три эндпоинта управляют линией питания и сброса подключённого внешнего
+устройства (два GPIO, по умолчанию GPIO20/21). Подсистемы включаются отдельно
+через `ext_pwr_enable` / `ext_rst_enable` в `POST /config`; по умолчанию обе
+выключены.
+
+### `GET /ext/status`
+
+Текущее состояние подсистемы управления внешним устройством.
+
+```bash
+curl http://192.168.4.1/ext/status
+```
+
+**Ответ (200):**
+
+```json
+{
+  "power_enabled": true,
+  "reset_enabled": true,
+  "power_state": false,
+  "power_pin": 20,
+  "reset_pin": 21,
+  "power_polarity": "active-high",
+  "reset_polarity": "active-low",
+  "reset_pulse_ms": 100
+}
+```
+
+- `power_polarity` / `reset_polarity` — строки `"active-high"` или
+  `"active-low"`.
+- `power_state` отражает состояние, сохранённое в NVS
+  (`ext_pwr_state`), и всегда равно `false`, пока подсистема питания
+  выключена.
+
+### `POST /ext/power`
+
+Переключает питание внешнего устройства. Новое состояние сразу пишется в NVS
+(`ext_pwr_st`) и восстанавливается при следующей загрузке.
+
+**Тело запроса:**
+
+```json
+{"on": true}
+```
+
+**Ответ (200):**
+
+```json
+{"power_state": true, "message": "Power ON"}
+```
+
+**Ошибки:**
+
+- `400 Bad Request` — отсутствует поле `on` или оно не boolean
+- `403 Forbidden` — cross-origin запрос (CSRF-защита)
+- `503 Service Unavailable` — подсистема `ext_pwr_enable` выключена
+
+### `POST /ext/reset`
+
+Отправляет импульс сброса на внешнее устройство заданной длительности
+(`ext_rst_pulse_ms`). Вызов блокирует HTTP-обработчик на время импульса
+(до 5000 мс).
+
+**Тело запроса:** игнорируется (допустимо `{}`)
+
+```bash
+curl -X POST http://192.168.4.1/ext/reset
+```
+
+**Ответ (200):**
+
+```json
+{"message": "Reset pulse sent (100ms)"}
+```
+
+**Ошибки:**
+
+- `403 Forbidden` — cross-origin запрос
+- `429 Too Many Requests` — троттлинг (менее 2 с с последнего сброса)
+- `503 Service Unavailable` — подсистема `ext_rst_enable` выключена
 
 ## Статика `GET /*`
 

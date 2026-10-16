@@ -1,6 +1,7 @@
 // main/pins.c
 #include "pins.h"
 #include "config.h"
+#include "ext_control.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
 
@@ -11,6 +12,17 @@ static void pin_out(gpio_num_t pin, int level)
     gpio_reset_pin(pin);
     gpio_set_direction(pin, GPIO_MODE_OUTPUT);
     gpio_set_level(pin, level);
+}
+
+// Like pin_out but sets the output latch to initial_level before enabling the
+// output driver, so the pin never briefly drives an undefined/stale level while
+// the direction changes (avoids a power/reset glitch on the external device).
+static void pin_out_glitchless(gpio_num_t pin, int initial_level)
+{
+    gpio_reset_pin(pin);
+    gpio_set_level(pin, initial_level);
+    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(pin, initial_level);
 }
 
 static void pin_in(gpio_num_t pin)
@@ -91,5 +103,30 @@ void init_pins(void)
         pin_out(p->led_green, 0);
     } else {
         ESP_LOGW(TAG, "LEDs disabled; skipping pin init");
+    }
+}
+
+void init_ext_pins(void)
+{
+    const app_config_t* cfg = get_config();
+    const pin_config_t* p = &cfg->pins;
+
+    if (cfg->ext_pwr_enable) {
+        if (!pin_skip_usb(p->ext_pwr)) {
+            // active-high: OFF = LOW, ON = HIGH; active-low is inverted.
+            const int off = ext_power_off_level(cfg->ext_pwr_pol);
+            const int on  = ext_power_on_level(cfg->ext_pwr_pol);
+            pin_out_glitchless(p->ext_pwr, off);
+            // Apply the persisted state last so the device sees no glitch.
+            gpio_set_level(p->ext_pwr, cfg->ext_pwr_state ? on : off);
+        }
+    }
+
+    if (cfg->ext_rst_enable) {
+        if (!pin_skip_usb(p->ext_rst)) {
+            // Leave reset inactive (opposite of the active level).
+            const int inactive = ext_reset_inactive_level(cfg->ext_rst_pol);
+            pin_out_glitchless(p->ext_rst, inactive);
+        }
     }
 }

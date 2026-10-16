@@ -73,6 +73,8 @@ bool validate_pin_config(const pin_config_t* pins, char* err_buf, size_t err_buf
         { "sensor_2",   pins->sensor_2,   true,  false },
         { "led_red",    pins->led_red,    false, true  },
         { "led_green",  pins->led_green,  false, true  },
+        { "ext_pwr",    pins->ext_pwr,    false, true  },
+        { "ext_rst",    pins->ext_rst,    false, true  },
     };
     const size_t n = sizeof(roles) / sizeof(roles[0]);
 

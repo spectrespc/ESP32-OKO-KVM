@@ -19,8 +19,20 @@
 #define PIN_DEFAULT_SENSOR_2    GPIO_NUM_9
 #define PIN_DEFAULT_LED_RED     GPIO_NUM_14
 #define PIN_DEFAULT_LED_GREEN   GPIO_NUM_15
+// External device power/reset. Both default to currently-free GPIOs so the
+// roles stay valid even while the subsystem is disabled (pin validation checks
+// every role unconditionally).
+#define PIN_DEFAULT_EXT_PWR     GPIO_NUM_20
+#define PIN_DEFAULT_EXT_RST     GPIO_NUM_21
 
 // Pin initialization (config-driven; skips disabled subsystems).
 void init_pins(void);
+
+// Configures the external power/reset outputs when their subsystems are
+// enabled. The power pin is forced to its inactive level before the output
+// driver is enabled and then restored to the persisted ext_pwr_state; the reset
+// pin is left inactive. No-op for disabled subsystems. Called from
+// init_ext_control() (not init_pins()) so the pins are never configured twice.
+void init_ext_pins(void);
 
 #endif // PINS_H

@@ -56,7 +56,28 @@
 `init_pins()` конфигурирует GPIO согласно `app_config_t`, пропуская отключённые
 подсистемы. Таблица возможностей в `pin_validation.c` описывает для каждого GPIO
 (0–22) поддержку input/output/open-drain, флаг зарезервированного USB-пина
-(12/13) и strapping-пина (2/8/9).
+(12/13) и strapping-пина (2/8/9). Роли `ext_pwr` / `ext_rst` добавлены в таблицу
+как выходные (output-only).
+
+### Управление внешним устройством (`ext_control.[ch]`)
+Модуль `ext_control.c` управляет двумя GPIO для питания и сброса подключённого
+внешнего устройства:
+
+- **Инициализация:** `init_ext_control()` → `init_ext_pins()` (pins.c).
+  Вызывается после `init_pins()` в `app_main()`. Восстанавливает персистентное
+  состояние питания из NVS, используя `pin_out_glitchless()` для защиты от
+  дребезга (уровень защёлкивается до включения выходного драйвера).
+- **Переключение питания:** `ext_power_set(on)` устанавливает уровень на пине
+  согласно полярности и атомарно пишет состояние в NVS через
+  `config_set_ext_power_state()` → `nvs_set_u8` + `nvs_commit`.
+- **Импульс сброса:** `ext_reset_pulse()` — блокирующий вызов в контексте
+  HTTP-обработчика. Активирует пин на `ext_rst_pulse_ms`, затем деактивирует.
+  Троттлинг: не чаще одного импульса в 2 секунды (`EXT_RESET_MIN_INTERVAL_US`).
+- **HTTP:** три эндпоинта зарегистрированы в `http_server.c`
+  (`/ext/status`, `/ext/power`, `/ext/reset`). POST-эндпоинты используют
+  CSRF-защиту `request_is_same_origin()` (system_handler.c).
+- **Web UI:** вкладка External (тумблер питания + сброс с подтверждением),
+  карточка «External device» на Dashboard, поля в Configuration.
 
 ### UART (`uart_handler.[ch]`)
 UART0 — консоль (115200, 8N1), выводится через USB Serial/JTAG. UART1 — мост
@@ -84,11 +105,11 @@ SD по SPI (`SPI2_HOST`), FatFs, точка монтирования `/sdcard`.
 отдельно от AP.
 
 ### HTTP-сервер (`http_server.c`)
-Порт 80, `ctrl_port` 32768, 7 сокетов, 20 URI-обработчиков, backlog 16,
-wildcard-сопоставление URI, стек задачи 8 КБ, приоритет `tskIDLE_PRIORITY+5`.
-Точные REST-маршруты регистрируются раньше catch-all `/*`, поэтому они
-выигрывают сопоставление. Настройки ответов — 8 заголовков, recv/send таймауты
-10 с.
+Порт 80, `ctrl_port` 32768, 7 сокетов, 18 URI-обработчиков (лимит
+`max_uri_handlers` = 20), backlog 16, wildcard-сопоставление URI, стек задачи
+8 КБ, приоритет `tskIDLE_PRIORITY+5`. Точные REST-маршруты регистрируются
+раньше catch-all `/*`, поэтому они выигрывают сопоставление. Настройки ответов —
+8 заголовков, recv/send таймауты 10 с.
 
 ### Веб-интерфейс (`web_handlers.c`, `web/index.html`)
 SPIFFS монтируется в `/spiffs` (раздел `spiffs`, `max_files` 5). SPA — единый
@@ -120,17 +141,20 @@ Path traversal (`..`) отклоняется с `400`.
    поймать сообщения загрузки
 3. **Конфигурация** (`init_config`) — должна предшествовать пинам и флагам
 4. **Пины** (`init_pins`)
-5. **UART0 / UART1** (`init_uart0` / `init_uart1`) — по флагам `uartN_enable`
-6. **Датчики** (`init_sensor_handler`) — если включена подсистема датчиков, I2C,
+5. **Внешнее управление** (`init_ext_control`) — конфигурирует GPIO питания и
+   сброса и восстанавливает персистентное состояние из NVS; следует за
+   `init_pins()`
+6. **UART0 / UART1** (`init_uart0` / `init_uart1`) — по флагам `uartN_enable`
+7. **Датчики** (`init_sensor_handler`) — если включена подсистема датчиков, I2C,
    любое CSV-логирование или MQTT
-7. **SD-карта** (`init_sd_handler`) — по флагу `sd_enable`
-8. **Wi-Fi AP** (`wifi_init`) — базовая инфраструктура
-9. **Wi-Fi STA** (`init_wifi_sta`) — восстановление сохранённой сети
-10. **MQTT** (`init_mqtt`) — после появления сетевого стека
-11. **Telnet-мосты** (`init_telnet_bridge0/1`) — если включены и доступен их UART
-12. **SPIFFS** (`init_spiffs`) — веб-ресурсы до старта HTTP
-13. **HTTP-сервер** (`init_http_server`)
-14. **Self-test** (`start_self_test`)
+8. **SD-карта** (`init_sd_handler`) — по флагу `sd_enable`
+9. **Wi-Fi AP** (`wifi_init`) — базовая инфраструктура
+10. **Wi-Fi STA** (`init_wifi_sta`) — восстановление сохранённой сети
+11. **MQTT** (`init_mqtt`) — после появления сетевого стека
+12. **Telnet-мосты** (`init_telnet_bridge0/1`) — если включены и доступен их UART
+13. **SPIFFS** (`init_spiffs`) — веб-ресурсы до старта HTTP
+14. **HTTP-сервер** (`init_http_server`)
+15. **Self-test** (`start_self_test`)
 
 После инициализации задача `app_main` остаётся живой в цикле задержки.
 

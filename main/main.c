@@ -20,6 +20,7 @@
 #include "telnet_bridge.h"
 #include "web_handlers.h"
 #include "log_handler.h"
+#include "ext_control.h"
 
 static const char* TAG = "main";
 
@@ -47,6 +48,11 @@ void app_main(void)
     // Initialize pins
     ESP_LOGI(TAG, "Initializing pins");
     init_pins();
+
+    // Initialize external device power/reset control (configures its GPIOs and
+    // restores the persisted power state; must follow init_pins()).
+    ESP_LOGI(TAG, "Initializing external device control");
+    init_ext_control();
 
     // Initialize UART (UART0 console; UART0 and UART1 available as bridge targets)
     ESP_LOGI(TAG, "Initializing UART");

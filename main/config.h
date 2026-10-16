@@ -7,6 +7,11 @@
 #include <stdbool.h>
 #include "driver/gpio.h"
 
+// Factory defaults for the external-device control fields (see config.c).
+#define EXT_RST_PULSE_MS_DEFAULT 100
+#define EXT_PWR_POL_DEFAULT      1
+#define EXT_RST_POL_DEFAULT      0
+
 // Reconfigurable GPIO assignments. Every subsystem pin can be overridden via
 // POST /config and is persisted to NVS. Defaults come from PIN_DEFAULT_* in
 // pins.h (see config.c).
@@ -25,6 +30,8 @@ typedef struct {
     gpio_num_t sensor_2;
     gpio_num_t led_red;
     gpio_num_t led_green;
+    gpio_num_t ext_pwr;      // external device power (OUTPUT)
+    gpio_num_t ext_rst;      // external device reset (OUTPUT, pulsed)
 } pin_config_t;
 
 // Configuration structure
@@ -66,6 +73,13 @@ typedef struct {
     uint8_t mqtt_enable;        // 0=off, 1=on (default: 0)
     char* mqtt_broker_url;      // e.g. "mqtt://192.168.1.100:1883" (NULL if unset)
     char* mqtt_topic_prefix;    // e.g. "gateway" -> topics: gateway/sht21, ...
+    // External device power/reset control (see ext_control.c).
+    uint8_t  ext_pwr_enable;    // 0=off, 1=on (default: 0)
+    uint8_t  ext_rst_enable;    // 0=off, 1=on (default: 0)
+    uint32_t ext_rst_pulse_ms;  // reset pulse width in ms, 10-5000 (default: 100)
+    uint8_t  ext_pwr_pol;       // 0=active-low, 1=active-high (default: 1)
+    uint8_t  ext_rst_pol;       // 0=active-low, 1=active-high (default: 0)
+    uint8_t  ext_pwr_state;     // last power state: 0=OFF, 1=ON (persisted)
 } app_config_t;
 
 // Configuration functions
@@ -80,5 +94,10 @@ void load_config(void);
 // telnet port, and on success applies + persists it to NVS. On failure it
 // returns false and writes a human-readable reason to err_buf.
 bool config_validate_and_set(app_config_t* candidate, char* err_buf, size_t err_buf_len);
+
+// Persists the external-device power on/off state to NVS (key "ext_pwr_st") and
+// updates the in-RAM configuration. Used by ext_control.c after driving the
+// GPIO; this field is intentionally not settable through POST /config.
+void config_set_ext_power_state(uint8_t on);
 
 #endif // CONFIG_H

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-10-16
+
+### Added
+- External device power/reset control. Two configurable GPIOs (`ext_pwr`,
+  `ext_rst`; default GPIO20/21) drive the attached device's power rail and reset
+  line, each with its own enable flag (`ext_pwr_enable`, `ext_rst_enable`),
+  polarity (`ext_pwr_pol`, `ext_rst_pol`) and — for reset — a configurable pulse
+  width (`ext_rst_pulse_ms`, 10-5000 ms). The power state persists to NVS
+  (`ext_pwr_st`) and is restored on boot with a glitch-safe pin init.
+- New REST endpoints `GET /ext/status`, `POST /ext/power` and `POST /ext/reset`;
+  the two POST endpoints use the shared same-origin CSRF guard and reset is
+  throttled to one pulse every 2 seconds.
+- New web UI: an "External" tab (power toggle + reset with confirmation), a
+  Dashboard "External device" card and Configuration fields for the enable
+  flags, polarity, pulse width and GPIOs.
+
 ## [1.1.0] — 2026-10-15
 
 ### Added

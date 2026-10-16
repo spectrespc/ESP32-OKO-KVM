@@ -53,10 +53,21 @@
 | `mqtt_en` | u8 | `0` | `mqtt_enable` | Публикация MQTT вкл/выкл |
 | `mqtt_url` | str | (нет) | `mqtt_broker_url` | URL брокера (≤255) |
 | `mqtt_topic` | str | (нет) | `mqtt_topic_prefix` | Префикс топика (≤64, по умолчанию `gateway`) |
+| `ext_pwr_en` | u8 | `0` | `ext_pwr_enable` | Управление питанием внешнего устройства вкл/выкл |
+| `ext_rst_en` | u8 | `0` | `ext_rst_enable` | Управление сбросом внешнего устройства вкл/выкл |
+| `ext_pwr_pin` | u32 | `20` | `pins.ext_pwr` | GPIO питания внешнего устройства |
+| `ext_rst_pin` | u32 | `21` | `pins.ext_rst` | GPIO сброса внешнего устройства |
+| `ext_pwr_pol` | u8 | `1` | `ext_pwr_pol` | Полярность питания (0=active-low, 1=active-high) |
+| `ext_rst_pol` | u8 | `0` | `ext_rst_pol` | Полярность сброса (0=active-low, 1=active-high) |
+| `ext_rst_ms` | u32 | `100` | `ext_rst_pulse_ms` | Длительность импульса сброса, мс (10–5000) |
+| `ext_pwr_st` | u8 | `0` | `ext_pwr_state` | Состояние питания (персистентно, только чтение) |
 | `sta_ssid` | str | (нет) | — | SSID станции (сохраняется через `POST /wifi/connect`) |
 | `sta_password` | str | (нет) | — | Пароль станции (сохраняется через `POST /wifi/connect`) |
 
 > `GET /config` намеренно **не возвращает** `wifi_password` и `sta_password`.
+
+> `ext_pwr_state` доступно только для чтения: оно изменяется лишь при вызове
+> `POST /ext/power`, но **не** через `POST /config`.
 
 ## Формат JSON для `POST /config`
 
@@ -162,6 +173,7 @@ curl -X POST http://192.168.4.1/config \
 | `PORT_CONFLICT` | Оба telnet-моста включены на одном порту |
 | `UART_INVALID` | Telnet-мост включён при выключенном соответствующем UART |
 | `MQTT_INVALID` | MQTT включён без непустого URL брокера или URL длиннее 255 символов |
+| `EXT_INVALID` | `ext_rst_pulse_ms` вне диапазона 10–5000; `ext_pwr_pol` / `ext_rst_pol` не `0`/`1` |
 
 ### Флаг strapping-пинов
 

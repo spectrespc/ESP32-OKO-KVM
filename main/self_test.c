@@ -80,10 +80,12 @@ static void self_test_task(void* arg)
     int fail = 0;
     for (size_t i = 0; i < sizeof(s_tests) / sizeof(s_tests[0]); i++) {
         // This self-test runs on every boot, so it must not exercise the
-        // destructive system endpoints (reboot/reset): doing so would restart
-        // the device mid-test and loop forever. build_and_flash.sh still
-        // covers them over the network.
-        if (strncmp(s_tests[i].path, "/system/", 8) == 0) {
+        // destructive system endpoints (reboot/reset) or the external-device
+        // reset (which would pulse the attached device on every boot): doing so
+        // would restart hardware mid-test. build_and_flash.sh still covers them
+        // over the network.
+        if (strncmp(s_tests[i].path, "/system/", 8) == 0 ||
+            strcmp(s_tests[i].path, "/ext/reset") == 0) {
             ESP_LOGW(TAG, "SELF-TEST SKIP %s %s (destructive)",
                      s_tests[i].method, s_tests[i].path);
             continue;

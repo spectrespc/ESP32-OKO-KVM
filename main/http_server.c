@@ -10,6 +10,7 @@
 #include "log_handler.h"
 #include "wifi_scan.h"
 #include "system_handler.h"
+#include "ext_control.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdio.h>
@@ -193,6 +194,19 @@ static esp_err_t handle_post_config(httpd_req_t *req)
     touched |= get_json_u8(root, "env_sd_log", &candidate.env_sd_log, &invalid);
     touched |= get_json_u8(root, "mqtt_enable", &candidate.mqtt_enable, &invalid);
 
+    // External device power/reset control (state is not settable here).
+    touched |= get_json_u8(root, "ext_pwr_enable", &candidate.ext_pwr_enable, &invalid);
+    touched |= get_json_u8(root, "ext_rst_enable", &candidate.ext_rst_enable, &invalid);
+    touched |= get_json_u8(root, "ext_pwr_pol", &candidate.ext_pwr_pol, &invalid);
+    touched |= get_json_u8(root, "ext_rst_pol", &candidate.ext_rst_pol, &invalid);
+    {
+        uint16_t pulse = 0;
+        if (get_json_u16(root, "ext_rst_pulse_ms", &pulse, &invalid)) {
+            candidate.ext_rst_pulse_ms = pulse;
+            touched = true;
+        }
+    }
+
     // I2C bus and sensor population.
     touched |= get_json_u8(root, "i2c_enable", &candidate.i2c_enable, &invalid);
     touched |= get_json_u8(root, "sht21_enable", &candidate.sht21_enable, &invalid);
@@ -217,6 +231,8 @@ static esp_err_t handle_post_config(httpd_req_t *req)
         touched |= get_json_pin(pins, "sensor_2", &candidate.pins.sensor_2, &invalid);
         touched |= get_json_pin(pins, "led_red", &candidate.pins.led_red, &invalid);
         touched |= get_json_pin(pins, "led_green", &candidate.pins.led_green, &invalid);
+        touched |= get_json_pin(pins, "ext_pwr", &candidate.pins.ext_pwr, &invalid);
+        touched |= get_json_pin(pins, "ext_rst", &candidate.pins.ext_rst, &invalid);
     }
 
     bool ssid_set = get_json_string(root, "wifi_ssid", &candidate.wifi_ssid);
@@ -318,6 +334,87 @@ static esp_err_t handle_post_sd_write(httpd_req_t *req)
     return reply_json(req, "200 OK", resp);
 }
 
+static esp_err_t handle_get_ext_status(httpd_req_t *req)
+{
+    char* json = ext_get_status_json();
+    if (!json) {
+        return reply_json(req, "500 Internal Server Error",
+                          "{\"error\":\"Failed to get external status\"}");
+    }
+    esp_err_t err = reply_json(req, "200 OK", json);
+    free(json);
+    return err;
+}
+
+static esp_err_t handle_post_ext_power(httpd_req_t *req)
+{
+    if (!request_is_same_origin(req)) {
+        return reply_json(req, "403 Forbidden",
+                          "{\"error\":\"Cross-origin request rejected\"}");
+    }
+
+    const app_config_t* cfg = get_config();
+    if (!cfg->ext_pwr_enable) {
+        return reply_json(req, "503 Service Unavailable",
+                          "{\"error\":\"External power control disabled\"}");
+    }
+
+    char body[256];
+    int received = read_body(req, body, sizeof(body));
+    if (received < 0) {
+        return reply_json(req, "400 Bad Request", "{\"error\":\"Failed to read request body\"}");
+    }
+
+    cJSON* root = cJSON_Parse(body);
+    if (!root) {
+        return reply_json(req, "400 Bad Request", "{\"error\":\"Invalid JSON\"}");
+    }
+
+    cJSON* on = cJSON_GetObjectItem(root, "on");
+    if (!on || !cJSON_IsBool(on)) {
+        cJSON_Delete(root);
+        return reply_json(req, "400 Bad Request", "{\"error\":\"Missing 'on' field\"}");
+    }
+    bool value = cJSON_IsTrue(on);
+    cJSON_Delete(root);
+
+    // Apply the request and report the authoritative post-operation state.
+    (void)ext_power_set(value);
+    bool state = ext_power_get();
+    char resp[96];
+    snprintf(resp, sizeof(resp), "{\"power_state\":%s,\"message\":\"Power %s\"}",
+             state ? "true" : "false", state ? "ON" : "OFF");
+    return reply_json(req, "200 OK", resp);
+}
+
+static esp_err_t handle_post_ext_reset(httpd_req_t *req)
+{
+    if (!request_is_same_origin(req)) {
+        return reply_json(req, "403 Forbidden",
+                          "{\"error\":\"Cross-origin request rejected\"}");
+    }
+
+    const app_config_t* cfg = get_config();
+    if (!cfg->ext_rst_enable) {
+        return reply_json(req, "503 Service Unavailable",
+                          "{\"error\":\"External reset control disabled\"}");
+    }
+
+    // The body is optional and ignored.
+    char body[64];
+    (void)read_body(req, body, sizeof(body));
+
+    if (!ext_reset_pulse()) {
+        return reply_json(req, "429 Too Many Requests",
+                          "{\"error\":\"Reset throttled, try again shortly\"}");
+    }
+
+    char resp[96];
+    snprintf(resp, sizeof(resp), "{\"message\":\"Reset pulse sent (%ums)\"}",
+             (unsigned)cfg->ext_rst_pulse_ms);
+    return reply_json(req, "200 OK", resp);
+}
+
 void init_http_server(void)
 {
     if (server) {
@@ -365,6 +462,9 @@ void init_http_server(void)
         {"/wifi/disconnect", HTTP_METHOD_POST, handle_wifi_disconnect},
         {"/system/reboot", HTTP_METHOD_POST, handle_system_reboot},
         {"/system/reset", HTTP_METHOD_POST, handle_system_reset},
+        {"/ext/status", HTTP_METHOD_GET, handle_get_ext_status},
+        {"/ext/power", HTTP_METHOD_POST, handle_post_ext_power},
+        {"/ext/reset", HTTP_METHOD_POST, handle_post_ext_reset},
         // Catch-all static handler must stay last so the exact REST routes
         // above win the URI match.
         {"/*", HTTP_METHOD_GET, handle_web_static},

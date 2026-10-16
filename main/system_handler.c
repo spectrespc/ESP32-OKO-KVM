@@ -16,7 +16,7 @@ static const char* TAG = "system_handler";
 // Rejects cross-origin browser requests to the destructive endpoints (a basic
 // CSRF guard). Requests without an Origin header (e.g. curl) are allowed, since
 // the endpoint is only reachable on the local SoftAP/STA network.
-static bool request_is_same_origin(httpd_req_t* req)
+bool request_is_same_origin(httpd_req_t* req)
 {
     size_t olen = httpd_req_get_hdr_value_len(req, "Origin");
     if (olen == 0) {
@@ -30,7 +30,6 @@ static bool request_is_same_origin(httpd_req_t* req)
     // Compare only the host[:port] portion of "scheme://host[:port]".
     const char* ohost = strstr(origin, "://");
     ohost = ohost ? ohost + 3 : origin;
-    size_t ohost_len = strcspn(ohost, "/");
 
     size_t hlen = httpd_req_get_hdr_value_len(req, "Host");
     char hosthdr[128];
