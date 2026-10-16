@@ -46,3 +46,6 @@ CONFIG_LOG_COLORS=y
 # MQTT over TLS (mqtts://) uses the default CA bundle from mbedTLS.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# Socket pool: default 10 is exhausted by httpd (8) + 2 telnet listeners.
+CONFIG_LWIP_MAX_SOCKETS=16

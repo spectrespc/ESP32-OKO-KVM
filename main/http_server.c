@@ -431,7 +431,7 @@ void init_http_server(void)
     config.max_uri_handlers = 20;
     config.max_resp_headers = 8;
     config.backlog_conn = 16;
-    config.lru_purge_enable = false;
+    config.lru_purge_enable = true;
     config.recv_wait_timeout = 10;
     config.send_wait_timeout = 10;
     // Enable wildcard URI matching so the static handler can own "/*" while
