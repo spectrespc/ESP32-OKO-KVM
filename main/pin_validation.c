@@ -51,32 +51,37 @@ typedef struct {
     bool need_out;
 } role_req_t;
 
-bool validate_pin_config(const pin_config_t* pins, char* err_buf, size_t err_buf_len)
+bool validate_pin_config(const pin_config_t* pins, bool ext_pwr_enable, bool ext_rst_enable,
+                         char* err_buf, size_t err_buf_len)
 {
     if (!pins) {
         if (err_buf && err_buf_len) snprintf(err_buf, err_buf_len, "PIN_INVALID: null config");
         return false;
     }
 
-    const role_req_t roles[] = {
-        { "uart0_tx",   pins->uart0_tx,   false, true  },
-        { "uart0_rx",   pins->uart0_rx,   true,  false },
-        { "uart1_tx",   pins->uart1_tx,   false, true  },
-        { "uart1_rx",   pins->uart1_rx,   true,  false },
-        { "sdspi_cs",   pins->sdspi_cs,   false, true  },
-        { "sdspi_mosi", pins->sdspi_mosi, false, true  },
-        { "sdspi_miso", pins->sdspi_miso, true,  false },
-        { "sdspi_sclk", pins->sdspi_sclk, false, true  },
-        { "i2c_sda",    pins->i2c_sda,    true,  true  },
-        { "i2c_scl",    pins->i2c_scl,    true,  true  },
-        { "sensor_1",   pins->sensor_1,   true,  false },
-        { "sensor_2",   pins->sensor_2,   true,  false },
-        { "led_red",    pins->led_red,    false, true  },
-        { "led_green",  pins->led_green,  false, true  },
-        { "ext_pwr",    pins->ext_pwr,    false, true  },
-        { "ext_rst",    pins->ext_rst,    false, true  },
-    };
-    const size_t n = sizeof(roles) / sizeof(roles[0]);
+    // Roles validated on every config save. The external-device pins are added
+    // only when their subsystem is enabled, so a pre-existing custom pin map
+    // that occupies the default ext GPIOs (20/21) keeps validating while the
+    // subsystem is off; enabling it re-validates those pins and reports any
+    // conflict (range, capability or duplicate).
+    role_req_t roles[16];
+    size_t n = 0;
+    roles[n++] = (role_req_t){ "uart0_tx",   pins->uart0_tx,   false, true  };
+    roles[n++] = (role_req_t){ "uart0_rx",   pins->uart0_rx,   true,  false };
+    roles[n++] = (role_req_t){ "uart1_tx",   pins->uart1_tx,   false, true  };
+    roles[n++] = (role_req_t){ "uart1_rx",   pins->uart1_rx,   true,  false };
+    roles[n++] = (role_req_t){ "sdspi_cs",   pins->sdspi_cs,   false, true  };
+    roles[n++] = (role_req_t){ "sdspi_mosi", pins->sdspi_mosi, false, true  };
+    roles[n++] = (role_req_t){ "sdspi_miso", pins->sdspi_miso, true,  false };
+    roles[n++] = (role_req_t){ "sdspi_sclk", pins->sdspi_sclk, false, true  };
+    roles[n++] = (role_req_t){ "i2c_sda",    pins->i2c_sda,    true,  true  };
+    roles[n++] = (role_req_t){ "i2c_scl",    pins->i2c_scl,    true,  true  };
+    roles[n++] = (role_req_t){ "sensor_1",   pins->sensor_1,   true,  false };
+    roles[n++] = (role_req_t){ "sensor_2",   pins->sensor_2,   true,  false };
+    roles[n++] = (role_req_t){ "led_red",    pins->led_red,    false, true  };
+    roles[n++] = (role_req_t){ "led_green",  pins->led_green,  false, true  };
+    if (ext_pwr_enable) roles[n++] = (role_req_t){ "ext_pwr", pins->ext_pwr, false, true };
+    if (ext_rst_enable) roles[n++] = (role_req_t){ "ext_rst", pins->ext_rst, false, true };
 
     for (size_t i = 0; i < n; i++) {
         const pin_info_t* info = get_pin_info(roles[i].pin);

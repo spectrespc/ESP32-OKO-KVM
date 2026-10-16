@@ -26,6 +26,11 @@ const pin_info_t* get_pin_info(gpio_num_t pin);
 // duplicate assignments, I2C SDA != SCL and USB-console conflicts. Returns
 // true when the assignment is usable, otherwise false with a reason written
 // to err_buf (e.g. "PIN_DUPLICATE: ...").
-bool validate_pin_config(const pin_config_t* pins, char* err_buf, size_t err_buf_len);
+//
+// The external-device roles (ext_pwr / ext_rst) are checked only when the
+// matching subsystem is enabled, so a pre-existing custom pin map that happens
+// to occupy the default ext GPIOs stays valid while the subsystem is off.
+bool validate_pin_config(const pin_config_t* pins, bool ext_pwr_enable, bool ext_rst_enable,
+                         char* err_buf, size_t err_buf_len);
 
 #endif // PIN_VALIDATION_H

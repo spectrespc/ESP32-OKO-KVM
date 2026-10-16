@@ -208,7 +208,8 @@ bool config_validate_and_set(app_config_t* candidate, char* err_buf, size_t err_
         return false;
     }
 
-    if (!validate_pin_config(&candidate->pins, err_buf, err_buf_len)) {
+    if (!validate_pin_config(&candidate->pins, candidate->ext_pwr_enable != 0,
+                             candidate->ext_rst_enable != 0, err_buf, err_buf_len)) {
         return false;
     }
 
@@ -306,8 +307,8 @@ bool config_validate_and_set(app_config_t* candidate, char* err_buf, size_t err_
 
     // External device control: pulse width and polarity ranges. Pin capability,
     // duplicate detection and the USB-console conflict are covered by
-    // validate_pin_config() above (ext_pwr/ext_rst are validated even when the
-    // subsystem is disabled).
+    // validate_pin_config() above (ext_pwr/ext_rst are validated only when their
+    // subsystem is enabled).
     if (candidate->ext_rst_pulse_ms < 10 || candidate->ext_rst_pulse_ms > 5000) {
         if (err_buf && err_buf_len) {
             snprintf(err_buf, err_buf_len,
