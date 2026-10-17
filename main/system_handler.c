@@ -1,5 +1,6 @@
 // main/system_handler.c
 #include "system_handler.h"
+#include "auth_handler.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
@@ -55,6 +56,14 @@ static esp_err_t reject_cross_origin(httpd_req_t* req)
     return ESP_OK;
 }
 
+static esp_err_t reject_unauthorized(httpd_req_t* req)
+{
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, "{\"error\":\"Authentication required\"}", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
 static void reply_and_wait(httpd_req_t* req, const char* body)
 {
     httpd_resp_set_type(req, "application/json");
@@ -64,6 +73,9 @@ static void reply_and_wait(httpd_req_t* req, const char* body)
 
 esp_err_t handle_system_reboot(httpd_req_t* req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     if (!request_is_same_origin(req)) {
         return reject_cross_origin(req);
     }
@@ -75,6 +87,9 @@ esp_err_t handle_system_reboot(httpd_req_t* req)
 
 esp_err_t handle_system_reset(httpd_req_t* req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     if (!request_is_same_origin(req)) {
         return reject_cross_origin(req);
     }

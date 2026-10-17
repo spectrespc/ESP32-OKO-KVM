@@ -215,7 +215,7 @@ curl http://192.168.4.1/config
     "uart1_tx": 4,  "uart1_rx": 5,
     "sdspi_cs": 10, "sdspi_mosi": 11, "sdspi_miso": 18, "sdspi_sclk": 19,
     "i2c_sda": 6,   "i2c_scl": 7,
-    "sensor_1": 8,  "sensor_2": 9,
+    "sensor_1": -1, "sensor_2": 9,
     "led_red": 14,  "led_green": 15
   }
 }
@@ -414,13 +414,23 @@ SHT21 и устройства INA делят адрес `0x40` по умолча
   и подключитесь. Учётные данные STA хранятся отдельно от учётных данных AP в
   NVS (`sta_ssid` / `sta_password`) и восстанавливаются при загрузке.
 
+### Учётные данные по умолчанию
+
+| Интерфейс | Логин           | Пароль       |
+|-----------|-----------------|--------------|
+| Web UI    | `admin`         | `admin`      |
+| WiFi AP   | `ESP32-Gateway` | `gateway123` |
+
+Web-креды хранятся в NVS (пространство имён `auth`, пароль — SHA-256) и
+меняются на вкладке **Account**. Смена кредов завершает все активные сессии.
+
 ## Веб-интерфейс
 
 SPA — это единый самодостаточный файл `web/index.html` (инлайн CSS + JS),
 встраиваемый в раздел SPIFFS на этапе сборки и отдаваемый обработчиком
 статики HTTP-сервера. Откройте **http://192.168.4.1** после подключения к AP.
-Доступно семь вкладок: Dashboard, Configuration, WiFi, Sensors, SD Card,
-External и System Log. Вкладка Configuration строит выпадающие списки GPIO на
+Доступно восемь вкладок: Dashboard, Configuration, WiFi, Sensors, SD Card,
+External, System Log и Account. Вкладка Configuration строит выпадающие списки GPIO на
 клиенте из таблицы пинов ESP32-C6 и отключает пины, уже назначенные другой роли.
 
 ## Конфигурация
@@ -625,8 +635,12 @@ gateway/
 
 ## REST API Reference
 
-All endpoints return JSON unless noted. There is no authentication; the device
-is intended for a trusted local network (the SoftAP or your own Wi-Fi).
+All endpoints return JSON unless noted. Every API endpoint requires an
+authenticated session (cookie set by `POST /auth/login`, default
+`admin`/`admin`) except the static SPA and the `/auth/*` routes; the device is
+intended for a trusted local network (the SoftAP or your own Wi-Fi). Requests
+without a valid session get `401 Unauthorized`. Requests originating from the
+device's own IP addresses are trusted so the on-boot self-test keeps working.
 
 | Method | Path                 | Description                                    | Success |
 |--------|----------------------|------------------------------------------------|---------|
@@ -648,6 +662,10 @@ is intended for a trusted local network (the SoftAP or your own Wi-Fi).
 | GET    | `/ext/status`        | External device power/reset state              | 200     |
 | POST   | `/ext/power`         | Turn external power on/off (`{"on":bool}`)     | 200/503 |
 | POST   | `/ext/reset`         | Send a reset pulse to the external device      | 200/429/503 |
+| POST   | `/auth/login`        | Authenticate (`{"username","password"}`)       | 200/400/401/429 |
+| POST   | `/auth/logout`       | End the current session                        | 200     |
+| GET    | `/auth/status`       | Current authentication state                   | 200     |
+| POST   | `/auth/password`     | Change credentials (`{"current","new"[,"username"]}`) | 200/400/403 |
 
 Error responses use `400 Bad Request` (malformed payload / invalid values),
 `500 Internal Server Error` (I/O failure) or `503 Service Unavailable`
@@ -693,7 +711,7 @@ curl http://192.168.4.1/config
     "uart1_tx": 4,  "uart1_rx": 5,
     "sdspi_cs": 10, "sdspi_mosi": 11, "sdspi_miso": 18, "sdspi_sclk": 19,
     "i2c_sda": 6,   "i2c_scl": 7,
-    "sensor_1": 8,  "sensor_2": 9,
+    "sensor_1": -1, "sensor_2": 9,
     "led_red": 14,  "led_green": 15
   }
 }
@@ -884,12 +902,24 @@ rejects a configuration where:
   the WiFi tab, then connect. STA credentials are stored separately from the AP
   credentials in NVS (`sta_ssid` / `sta_password`) and are restored on boot.
 
+### Default Credentials
+
+| Interface | Username        | Password     |
+|-----------|-----------------|--------------|
+| Web UI    | `admin`         | `admin`      |
+| WiFi AP   | `ESP32-Gateway` | `gateway123` |
+
+Web credentials are stored in NVS (namespace `auth`, password as a SHA-256
+digest) and can be changed on the **Account** tab. Changing them ends every
+active session.
+
 ## Web Interface
 
 The SPA is a single self-contained `web/index.html` (inline CSS + JS) baked into
 the SPIFFS partition at build time and served by the HTTP server's catch-all
-handler. Open **http://192.168.4.1** after joining the AP. It has seven tabs:
-Dashboard, Configuration, WiFi, Sensors, SD Card, External and System Log. The
+handler. Open **http://192.168.4.1** after joining the AP. It has eight tabs:
+Dashboard, Configuration, WiFi, Sensors, SD Card, External, System Log and
+Account. The
 Configuration tab renders GPIO dropdowns client-side from the ESP32-C6 pin table
 and disables pins already assigned to another role.
 

@@ -6,3 +6,4 @@
 dependencies:
   espressif/cjson: "~1.7"
   espressif/mqtt: "^1.0.0"
+  espressif/led_strip: "^3"

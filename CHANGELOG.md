@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-10-17
+
+### Added
+- **WS2812 status LED** on GPIO8: RGB-индикатор состояния устройства (синий —
+  загрузка, жёлтый — подключение к WiFi, зелёный — норма, красный — ошибка,
+  голубой — только AP). Управляется через RMT (компонент `espressif/led_strip`).
+- **Web UI authentication:** cookie-based сессии, эндпоинты `/auth/login`,
+  `/auth/logout`, `/auth/status`, `/auth/password`. Все API-эндпоинты защищены.
+  Дефолтные креды `admin` / `admin`, хранятся в NVS (SHA-256).
+- **Account tab** в веб-интерфейсе: смена имени пользователя и пароля.
+
+### Changed
+- **GPIO8:** дефолт `sensor_1` снят (теперь `GPIO_NUM_NC`). Пин занят WS2812.
+  Устройства со старым NVS (`sensor_1 = GPIO8`) мигрируются на `NC` при загрузке.
+
+### Security
+- HTTP API больше не общедоступен: все запросы кроме статики и `/auth/*`
+  требуют валидной сессионной куки. Запросы с собственного IP устройства
+  (on-boot self-test) пропускаются без auth.
+
 ## [1.2.1] — 2026-10-16
 
 ### Fixed

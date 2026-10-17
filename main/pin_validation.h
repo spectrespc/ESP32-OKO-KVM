@@ -17,6 +17,7 @@ typedef struct {
     bool open_drain;   // supports open-drain (I2C) operation
     bool usb_reserved; // native USB D-/D+ on the ESP32-C6
     bool strapping;    // boot strapping pin (warning only)
+    bool reserved;     // permanently occupied by on-board hardware (e.g. WS2812)
 } pin_info_t;
 
 // Returns the capability descriptor for a GPIO, or NULL when out of range.

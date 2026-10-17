@@ -9,6 +9,7 @@ static const char* TAG = "pins";
 
 static void pin_out(gpio_num_t pin, int level)
 {
+    if (pin == GPIO_NUM_NC) return;
     gpio_reset_pin(pin);
     gpio_set_direction(pin, GPIO_MODE_OUTPUT);
     gpio_set_level(pin, level);
@@ -19,6 +20,7 @@ static void pin_out(gpio_num_t pin, int level)
 // the direction changes (avoids a power/reset glitch on the external device).
 static void pin_out_glitchless(gpio_num_t pin, int initial_level)
 {
+    if (pin == GPIO_NUM_NC) return;
     gpio_reset_pin(pin);
     gpio_set_level(pin, initial_level);
     gpio_set_direction(pin, GPIO_MODE_OUTPUT);
@@ -27,12 +29,14 @@ static void pin_out_glitchless(gpio_num_t pin, int initial_level)
 
 static void pin_in(gpio_num_t pin)
 {
+    if (pin == GPIO_NUM_NC) return;
     gpio_reset_pin(pin);
     gpio_set_direction(pin, GPIO_MODE_INPUT);
 }
 
 static void pin_od(gpio_num_t pin)
 {
+    if (pin == GPIO_NUM_NC) return;
     gpio_reset_pin(pin);
     gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT_OD);
     gpio_set_level(pin, 1);

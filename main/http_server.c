@@ -11,6 +11,7 @@
 #include "wifi_scan.h"
 #include "system_handler.h"
 #include "ext_control.h"
+#include "auth_handler.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdio.h>
@@ -26,6 +27,12 @@ static esp_err_t reply_json(httpd_req_t *req, const char* status_line, const cha
     httpd_resp_set_status(req, status_line);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+}
+
+// Standard rejection for API handlers that require an authenticated session.
+static esp_err_t reject_unauthorized(httpd_req_t *req)
+{
+    return reply_json(req, "401 Unauthorized", "{\"error\":\"Authentication required\"}");
 }
 
 // Reads at most max_len bytes of the request body into buf (NUL-terminated).
@@ -112,7 +119,8 @@ static bool get_json_pin(cJSON* obj, const char* key, gpio_num_t* out, bool* inv
         return false;
     }
     double v = it->valuedouble;
-    if (v != (double)(int64_t)v || v < 0 || v > PIN_MAX_GPIO) {
+    // -1 (GPIO_NUM_NC) unassigns the role; 0..PIN_MAX_GPIO are real pins.
+    if (v != (double)(int64_t)v || v < -1 || v > PIN_MAX_GPIO) {
         *invalid = true;
         return false;
     }
@@ -140,6 +148,9 @@ static bool get_json_string(cJSON* root, const char* key, char** slot)
 
 static esp_err_t handle_get_config(httpd_req_t *req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     char* config_json = get_config_json();
     if (config_json) {
         httpd_resp_set_type(req, "application/json");
@@ -154,6 +165,9 @@ static esp_err_t handle_get_config(httpd_req_t *req)
 
 static esp_err_t handle_post_config(httpd_req_t *req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     char body[4096];
     int received = read_body(req, body, sizeof(body));
     if (received < 0) {
@@ -283,6 +297,9 @@ static esp_err_t handle_post_config(httpd_req_t *req)
 
 static esp_err_t handle_get_sensor_data(httpd_req_t *req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     char* sensor_data = get_sensor_data_json();
     if (sensor_data) {
         httpd_resp_set_type(req, "application/json");
@@ -297,6 +314,9 @@ static esp_err_t handle_get_sensor_data(httpd_req_t *req)
 
 static esp_err_t handle_post_sensor_data(httpd_req_t *req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     // Body is accepted and discarded (no real sensor ingestion pipeline yet).
     char body[512];
     (void)read_body(req, body, sizeof(body));
@@ -305,6 +325,9 @@ static esp_err_t handle_post_sensor_data(httpd_req_t *req)
 
 static esp_err_t handle_get_sd_status(httpd_req_t *req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     const app_config_t* cfg = get_config();
     if (!cfg->sd_enable || get_sd_status() != SD_STATUS_READY) {
         return reply_json(req, "503 Service Unavailable", "{\"error\":\"SD disabled\"}");
@@ -314,6 +337,9 @@ static esp_err_t handle_get_sd_status(httpd_req_t *req)
 
 static esp_err_t handle_post_sd_write(httpd_req_t *req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     const app_config_t* cfg = get_config();
     if (!cfg->sd_enable || get_sd_status() != SD_STATUS_READY) {
         return reply_json(req, "503 Service Unavailable", "{\"error\":\"SD disabled\"}");
@@ -336,6 +362,9 @@ static esp_err_t handle_post_sd_write(httpd_req_t *req)
 
 static esp_err_t handle_get_ext_status(httpd_req_t *req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     char* json = ext_get_status_json();
     if (!json) {
         return reply_json(req, "500 Internal Server Error",
@@ -348,6 +377,11 @@ static esp_err_t handle_get_ext_status(httpd_req_t *req)
 
 static esp_err_t handle_post_ext_power(httpd_req_t *req)
 {
+    // Auth is checked before the CSRF guard so an unauthenticated client always
+    // gets a plain 401 and a cross-origin authenticated one gets 403.
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     if (!request_is_same_origin(req)) {
         return reply_json(req, "403 Forbidden",
                           "{\"error\":\"Cross-origin request rejected\"}");
@@ -389,6 +423,9 @@ static esp_err_t handle_post_ext_power(httpd_req_t *req)
 
 static esp_err_t handle_post_ext_reset(httpd_req_t *req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     if (!request_is_same_origin(req)) {
         return reply_json(req, "403 Forbidden",
                           "{\"error\":\"Cross-origin request rejected\"}");
@@ -428,7 +465,7 @@ void init_http_server(void)
     config.server_port = 80;
     config.ctrl_port = 32768;
     config.max_open_sockets = 10;
-    config.max_uri_handlers = 20;
+    config.max_uri_handlers = 24;
     config.max_resp_headers = 8;
     config.backlog_conn = 16;
     config.lru_purge_enable = true;
@@ -465,6 +502,12 @@ void init_http_server(void)
         {"/ext/status", HTTP_METHOD_GET, handle_get_ext_status},
         {"/ext/power", HTTP_METHOD_POST, handle_post_ext_power},
         {"/ext/reset", HTTP_METHOD_POST, handle_post_ext_reset},
+        // Authentication endpoints (exempt from auth_check). Registered before
+        // the static catch-all so the exact routes take priority.
+        {"/auth/login", HTTP_METHOD_POST, handle_auth_login},
+        {"/auth/logout", HTTP_METHOD_POST, handle_auth_logout},
+        {"/auth/status", HTTP_METHOD_GET, handle_auth_status},
+        {"/auth/password", HTTP_METHOD_POST, handle_auth_password},
         // Catch-all static handler must stay last so the exact REST routes
         // above win the URI match.
         {"/*", HTTP_METHOD_GET, handle_web_static},

@@ -1,5 +1,6 @@
 // main/log_handler.c
 #include "log_handler.h"
+#include "auth_handler.h"
 #include "esp_log.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
@@ -87,6 +88,13 @@ void init_log_handler(void)
 
 esp_err_t handle_get_logs(httpd_req_t* req)
 {
+    if (!auth_check(req)) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, "{\"error\":\"Authentication required\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
     // Snapshot the buffer under the lock first to avoid holding the lock
     // during serialization and allocation operations
     if (s_mutex) {

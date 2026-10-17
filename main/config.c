@@ -658,6 +658,14 @@ void load_config(void)
     app_config.pins.ext_pwr    = load_pin(s_nvs_handle, "ext_pwr_pin", PIN_DEFAULT_EXT_PWR);
     app_config.pins.ext_rst    = load_pin(s_nvs_handle, "ext_rst_pin", PIN_DEFAULT_EXT_RST);
 
+    // GPIO8 is now the fixed WS2812 status LED. Devices that still map sensor_1
+    // to GPIO8 in NVS are migrated to unassigned so the pin is not driven as an
+    // input after the firmware upgrade.
+    if (app_config.pins.sensor_1 == GPIO_NUM_8) {
+        ESP_LOGW(TAG, "Migrating sensor_1 from GPIO8 (now WS2812) to NC");
+        app_config.pins.sensor_1 = GPIO_NUM_NC;
+    }
+
     // External device power/reset control; disabled by default with safe
     // defaults so the pins stay valid even before the feature is enabled.
     if (nvs_get_u8(s_nvs_handle, "ext_pwr_en", &app_config.ext_pwr_enable) != ESP_OK) {

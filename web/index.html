@@ -140,6 +140,19 @@ select.gpio option.boot{color:var(--warn)}
   border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);
   padding:20px;width:min(420px,100%)}
 .icon-btn{background:transparent;border:0;color:var(--muted);cursor:pointer;font-size:18px}
+.hidden{display:none !important}
+.overlay{position:fixed;inset:0;background:rgba(5,10,22,.82);
+  -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);
+  display:flex;align-items:center;justify-content:center;z-index:1000;padding:18px}
+.login-box{background:linear-gradient(180deg,var(--card) 0%,var(--card-2) 100%);
+  border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);
+  padding:26px;width:min(360px,100%)}
+.login-box h2{margin:0 0 6px;text-align:center}
+.login-box .sub{text-align:center;color:var(--muted);font-size:13px;margin:0 0 18px}
+.login-box button.btn{width:100%;margin-top:6px}
+#login-error{margin:12px 0 0;color:var(--err);font-size:13px;text-align:center}
+.account-current{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding-bottom:14px;margin-bottom:16px;border-bottom:1px dashed var(--line)}
 </style>
 </head>
 <body>
@@ -155,10 +168,30 @@ select.gpio option.boot{color:var(--warn)}
       <button data-page="sd">SD Card</button>
       <button data-page="external">External</button>
       <button data-page="logs">System Log</button>
+      <button data-page="account">Account</button>
     </nav>
   </div>
 </header>
 <main id="page-content"></main>
+
+<div class="overlay hidden" id="login-overlay">
+  <div class="login-box">
+    <h2>ESP32 Gateway</h2>
+    <p class="sub">Sign in to continue</p>
+    <form id="login-form">
+      <div class="field">
+        <label>Username</label>
+        <input id="login-user" placeholder="admin" autocomplete="username" value="admin">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <button class="btn" type="submit">Sign In</button>
+      <p id="login-error" class="hidden"></p>
+    </form>
+  </div>
+</div>
 
 <div class="modal" id="wifi-modal">
   <div class="modal-card">
@@ -238,14 +271,58 @@ function closeConfirm(){
 function systemAction(path, busyMsg){
   toast(busyMsg || "Working…", "ok");
   // The device acknowledges then restarts, so a dropped connection is expected.
-  fetch(path, { method:"POST", headers:{"Content-Type":"application/json"}, body:"{}" })
+  fetch(path, { method:"POST", headers:{"Content-Type":"application/json"}, body:"{}", credentials:"same-origin" })
     .catch(() => {})
     .finally(() => toast("Command sent. The device is restarting…", "ok"));
 }
 
+/* --------------------------------------------------------------- auth state */
+let currentUser = null;
+let loginShown = false;
+
+function showLogin(){
+  $("#login-overlay").classList.remove("hidden");
+  const nav = $("#nav");
+  if (nav) nav.style.display = "none";
+}
+function hideLogin(){
+  $("#login-overlay").classList.add("hidden");
+  const nav = $("#nav");
+  if (nav) nav.style.display = "";
+  loginShown = false;
+}
+// Called from fetchJSON on a 401. Guarded so background pollers do not keep
+// re-triggering the overlay while it is already visible.
+function onUnauthorized(){
+  if (loginShown) return;
+  loginShown = true;
+  currentUser = null;
+  showLogin();
+}
+
+async function checkAuth(){
+  const r = await fetchJSON("GET", "/auth/status");
+  if (r.ok && r.data && r.data.authenticated){
+    currentUser = r.data.username || "admin";
+    hideLogin();
+    return true;
+  }
+  currentUser = null;
+  loginShown = true;
+  showLogin();
+  return false;
+}
+
+async function doLogout(){
+  await fetchJSON("POST", "/auth/logout", {});
+  currentUser = null;
+  clearPollers();
+  showLogin();
+}
+
 /* --------------------------------------------------------------- api client */
 async function fetchJSON(method, path, body){
-  const opts = { method, headers: {} };
+  const opts = { method, headers: {}, credentials: "same-origin" };
   if (body !== undefined){
     opts.headers["Content-Type"] = "application/json";
     opts.body = typeof body === "string" ? body : JSON.stringify(body);
@@ -259,6 +336,7 @@ async function fetchJSON(method, path, body){
       catch(e){ data = { raw: text }; }
     }
     setConn(true);
+    if (res.status === 401){ onUnauthorized(); }
     return { ok: res.ok, status: res.status, data };
   }catch(err){
     setConn(false);
@@ -291,6 +369,7 @@ const routes = {
   sd:        renderSD,
   external:  renderExternal,
   logs:      renderLogs,
+  account:   renderAccount,
 };
 
 function updateNav(page){
@@ -507,21 +586,25 @@ const ENABLE_FIELDS = [
 
 /* Hardcoded ESP32-C6 GPIO table (0-22). GPIO12/13 are the native USB D-/D+
    lines (reserved while the USB Serial/JTAG console is active); GPIO2/8/9 are
-   boot strapping pins (usable but flagged). */
+   boot strapping pins (usable but flagged). GPIO8 is permanently reserved for
+   the on-board WS2812 status LED. */
 const GPIO_TABLE = (() => {
   const usb  = new Set([12, 13]);
   const boot = new Set([2, 8, 9]);
+  const reserved = new Set([8]);
   const pins = [];
-  for (let n = 0; n <= 22; n++) pins.push({ n, usb: usb.has(n), boot: boot.has(n) });
+  for (let n = 0; n <= 22; n++) pins.push({ n, usb: usb.has(n), boot: boot.has(n), reserved: reserved.has(n) });
   return pins;
 })();
 
 function gpioLabel(p){
+  if (p.reserved) return "GPIO " + p.n + "  [reserved: WS2812]";
   return "GPIO " + p.n + "  (I/O)" + (p.boot ? " ⚠ boot" : "") + (p.usb ? " [USB reserved]" : "");
 }
 
-/* Disables, in every GPIO dropdown, options that are USB-reserved or already
-   selected by a different field, so duplicates are impossible client-side. */
+/* Disables, in every GPIO dropdown, options that are reserved (WS2812/USB) or
+   already selected by a different field, so duplicates are impossible
+   client-side. Multiple "unassigned" (-1) roles are allowed. */
 function refreshPinOptions(){
   const selects = Array.from(document.querySelectorAll("select.gpio"));
   const chosen = {};
@@ -529,12 +612,12 @@ function refreshPinOptions(){
   selects.forEach(s => {
     const mine = parseInt(s.value, 10);
     const used = new Set(Object.entries(chosen)
-      .filter(([k]) => k !== s.dataset.key)
+      .filter(([k, v]) => k !== s.dataset.key && v >= 0)
       .map(([, v]) => v));
     Array.from(s.options).forEach(o => {
       const val = parseInt(o.value, 10);
       const info = GPIO_TABLE[val];
-      o.disabled = (info && info.usb && val !== mine) || used.has(val);
+      o.disabled = (info && (info.reserved || (info.usb && val !== mine))) || used.has(val);
     });
   });
 }
@@ -600,11 +683,12 @@ async function renderConfig(){
     <p class="muted" style="margin:10px 0 0">Power and reset pins are chosen in the GPIO pins table below. Reset pulses are throttled to one every 2 seconds.</p>`;
 
   const pinHtml = PIN_FIELDS.map(([key,label]) => {
-    const cur = cfg.pins ? cfg.pins[key] : 0;
-    const opts = GPIO_TABLE.map(p => {
+    const cur = (cfg.pins && cfg.pins[key] !== undefined) ? cfg.pins[key] : -1;
+    const ncSel = (cur < 0) ? " selected" : "";
+    const opts = `<option value="-1"${ncSel}>Unassigned (NC)</option>` + GPIO_TABLE.map(p => {
       const sel = (p.n === cur) ? " selected" : "";
-      const disabled = (p.usb && p.n !== cur) ? " disabled" : "";
-      const cls = p.boot ? "boot" : (p.usb ? "reserved" : "");
+      const disabled = (p.reserved || (p.usb && p.n !== cur)) ? " disabled" : "";
+      const cls = p.reserved ? "reserved" : (p.boot ? "boot" : (p.usb ? "reserved" : ""));
       return `<option value="${p.n}" class="${cls}"${sel}${disabled}>${gpioLabel(p)}</option>`;
     }).join("");
     return `<tr><td>${label}</td>
@@ -932,7 +1016,7 @@ function renderSD(){
     const text = $("#sd-data").value;
     if (!text){ toast("Nothing to write.", "err"); return; }
     try{
-      const res = await fetch("/sd/write", { method:"POST", headers:{"Content-Type":"text/plain"}, body:text });
+      const res = await fetch("/sd/write", { method:"POST", headers:{"Content-Type":"text/plain"}, body:text, credentials:"same-origin" });
       const body = await res.text();
       let data = {}; try{ data = JSON.parse(body); }catch(_){}
       if (res.ok){
@@ -1086,6 +1170,60 @@ function renderLogs(){
   poll(refresh, 1000);
 }
 
+/* =============================================================== ACCOUNT */
+function renderAccount(){
+  pageEl.innerHTML = `<h2>Account</h2>
+    <div class="grid cols-2">
+      <div class="card">
+        <h3>Signed in</h3>
+        <div class="account-current">
+          <span><b>${escapeHtml(currentUser || "—")}</b></span>
+          <button class="btn ghost" id="acc-logout">Sign Out</button>
+        </div>
+        <p class="muted" style="margin:0">Sessions are held in RAM and end on reboot. At most 3
+        concurrent sessions are allowed.</p>
+      </div>
+      <div class="card">
+        <h3>Update credentials</h3>
+        <form id="acc-form">
+          <div class="field"><label>New username <span class="muted">(leave blank to keep current)</span></label>
+            <input type="text" id="acc-user" autocomplete="username" placeholder="${escapeHtml(currentUser || "")}"></div>
+          <div class="field"><label>Current password</label>
+            <input type="password" id="acc-current" autocomplete="current-password"></div>
+          <div class="field"><label>New password <span class="muted">(min 4 characters)</span></label>
+            <input type="password" id="acc-new" autocomplete="new-password"></div>
+          <div class="field"><label>Confirm new password</label>
+            <input type="password" id="acc-confirm" autocomplete="new-password"></div>
+          <button class="btn" type="submit">Update Credentials</button>
+        </form>
+      </div>
+    </div>`;
+
+  $("#acc-logout").addEventListener("click", () => openConfirm(
+    "Sign out", "End the current session on this device?", "Sign Out", () => doLogout()));
+
+  $("#acc-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const username = $("#acc-user").value.trim();
+    const current = $("#acc-current").value;
+    const nw = $("#acc-new").value;
+    const confirm = $("#acc-confirm").value;
+    if (!current){ toast("Current password is required.", "err"); return; }
+    if (nw.length < 4){ toast("New password must be at least 4 characters.", "err"); return; }
+    if (nw !== confirm){ toast("New passwords do not match.", "err"); return; }
+    const body = { current: current };
+    body["new"] = nw;
+    if (username) body.username = username;
+    const res = await fetchJSON("POST", "/auth/password", body);
+    if (res.ok){
+      toast("Credentials updated. Please re-login.", "ok");
+      doLogout();
+    }else{
+      toast("Update failed: " + ((res.data && res.data.error) || ("HTTP " + res.status)), "err");
+    }
+  });
+}
+
 /* ----------------------------------------------------------- wifi modal */
 $("#wifi-modal-close").addEventListener("click", closeWifiModal);
 $("#wifi-modal-cancel").addEventListener("click", closeWifiModal);
@@ -1114,8 +1252,34 @@ $("#confirm-ok").addEventListener("click", () => {
   if (fn) fn();
 });
 
+/* ------------------------------------------------------------------ login */
+$("#login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const user = $("#login-user").value;
+  const pass = $("#login-pass").value;
+  const res = await fetchJSON("POST", "/auth/login", { username: user, password: pass });
+  if (res.ok && res.data && res.data.authenticated){
+    currentUser = res.data.username || user;
+    $("#login-pass").value = "";
+    $("#login-error").classList.add("hidden");
+    hideLogin();
+    navigate();
+  }else{
+    $("#login-error").textContent = (res.data && res.data.error) || "Invalid credentials";
+    $("#login-error").classList.remove("hidden");
+  }
+});
+
 /* ------------------------------------------------------------------- boot */
-navigate();
+(async function boot(){
+  // Hide the tab bar until the session is confirmed, then render the landing
+  // page. A background 401 later re-shows the overlay (see fetchJSON).
+  const nav = $("#nav");
+  if (nav) nav.style.display = "none";
+  if (await checkAuth()){
+    navigate();
+  }
+})();
 </script>
 </body>
 </html>

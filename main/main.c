@@ -21,6 +21,8 @@
 #include "web_handlers.h"
 #include "log_handler.h"
 #include "ext_control.h"
+#include "status_led.h"
+#include "auth_handler.h"
 
 static const char* TAG = "main";
 
@@ -48,6 +50,10 @@ void app_main(void)
     // Initialize pins
     ESP_LOGI(TAG, "Initializing pins");
     init_pins();
+
+    // Bring up the WS2812 status LED (blue while booting).
+    status_led_init();
+    status_led_set_state(STATUS_LED_INIT);
 
     // Initialize external device power/reset control (configures its GPIOs and
     // restores the persisted power state; must follow init_pins()).
@@ -80,6 +86,7 @@ void app_main(void)
 
     // Initialize WiFi AP (core infrastructure)
     ESP_LOGI(TAG, "Initializing WiFi AP");
+    status_led_set_state(STATUS_LED_WIFI_CONNECTING);
     err = wifi_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize WiFi AP: %s", esp_err_to_name(err));
@@ -112,6 +119,10 @@ void app_main(void)
     // Mount the SPIFFS web assets before starting the HTTP server.
     ESP_LOGI(TAG, "Mounting SPIFFS web assets");
     init_spiffs();
+
+    // Load/create the web credentials before the HTTP server starts serving.
+    ESP_LOGI(TAG, "Initializing authentication");
+    auth_init();
 
     // Initialize HTTP server (core infrastructure)
     ESP_LOGI(TAG, "Starting HTTP server");

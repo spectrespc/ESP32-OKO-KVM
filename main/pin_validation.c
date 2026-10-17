@@ -19,7 +19,7 @@ static const pin_info_t s_pin_info[PIN_MAX_GPIO + 1] = {
     [5]  = { GPIO_NUM_5,  true, true, true,  false, false },
     [6]  = { GPIO_NUM_6,  true, true, true,  false, false },
     [7]  = { GPIO_NUM_7,  true, true, true,  false, false },
-    [8]  = { GPIO_NUM_8,  true, true, true,  false, true  },
+    [8]  = { GPIO_NUM_8,  true, true, true,  false, true,  true  },
     [9]  = { GPIO_NUM_9,  true, true, true,  false, true  },
     [10] = { GPIO_NUM_10, true, true, true,  false, false },
     [11] = { GPIO_NUM_11, true, true, true,  false, false },
@@ -84,11 +84,25 @@ bool validate_pin_config(const pin_config_t* pins, bool ext_pwr_enable, bool ext
     if (ext_rst_enable) roles[n++] = (role_req_t){ "ext_rst", pins->ext_rst, false, true };
 
     for (size_t i = 0; i < n; i++) {
+        // An unassigned (NC) role is allowed and skips every per-pin check.
+        if (roles[i].pin == GPIO_NUM_NC) {
+            continue;
+        }
+
         const pin_info_t* info = get_pin_info(roles[i].pin);
         if (!info) {
             if (err_buf && err_buf_len) {
                 snprintf(err_buf, err_buf_len, "PIN_INVALID: %s GPIO%d out of range (0-%d)",
                          roles[i].name, (int)roles[i].pin, PIN_MAX_GPIO);
+            }
+            return false;
+        }
+
+        if (info->reserved) {
+            if (err_buf && err_buf_len) {
+                snprintf(err_buf, err_buf_len,
+                         "PIN_RESERVED: GPIO%d is reserved for WS2812 status LED",
+                         (int)roles[i].pin);
             }
             return false;
         }
@@ -134,7 +148,8 @@ bool validate_pin_config(const pin_config_t* pins, bool ext_pwr_enable, bool ext
     }
 
     // I2C SDA and SCL must differ (also covered by the duplicate check below).
-    if (pins->i2c_sda == pins->i2c_scl) {
+    // Two unassigned (NC) roles are permitted.
+    if (pins->i2c_sda != GPIO_NUM_NC && pins->i2c_sda == pins->i2c_scl) {
         if (err_buf && err_buf_len) {
             snprintf(err_buf, err_buf_len, "PIN_I2C_CONFLICT: I2C SDA and SCL are both GPIO%d",
                      (int)pins->i2c_sda);
@@ -142,9 +157,15 @@ bool validate_pin_config(const pin_config_t* pins, bool ext_pwr_enable, bool ext
         return false;
     }
 
-    // Every subsystem pin must be unique.
+    // Every assigned subsystem pin must be unique.
     for (size_t i = 0; i < n; i++) {
+        if (roles[i].pin == GPIO_NUM_NC) {
+            continue;
+        }
         for (size_t j = i + 1; j < n; j++) {
+            if (roles[j].pin == GPIO_NUM_NC) {
+                continue;
+            }
             if (roles[i].pin == roles[j].pin) {
                 if (err_buf && err_buf_len) {
                     snprintf(err_buf, err_buf_len,

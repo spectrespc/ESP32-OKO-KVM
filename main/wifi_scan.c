@@ -1,9 +1,12 @@
 // main/wifi_scan.c
 #include "wifi_scan.h"
+#include "auth_handler.h"
+#include "status_led.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
@@ -42,6 +45,12 @@ static char s_ip[16] = { 0 };
 static volatile bool s_user_disconnect = false;
 static volatile bool s_self_reconnect = false;
 static int s_retry = 0;
+
+// Consecutive STA connect failures within a rolling 60 s window; drives the
+// status LED from "disconnected" (yellow) to "error" (red) when the link keeps
+// failing (see status_led.h).
+static int s_fail_count = 0;
+static int64_t s_fail_window_us = 0;
 
 // Asynchronous scan: handle_wifi_scan kicks off a non-blocking scan and returns
 // immediately; the SCAN_DONE event caches the result which
@@ -103,6 +112,7 @@ static void sta_event_handler(void* arg, esp_event_base_t event_base,
                     s_user_disconnect = false;
                     s_retry = 0;
                     s_state = STA_IDLE;
+                    status_led_set_state(STATUS_LED_AP_MODE);
                     break;
                 }
                 if (s_self_reconnect) {
@@ -119,6 +129,18 @@ static void sta_event_handler(void* arg, esp_event_base_t event_base,
                     ESP_LOGW(TAG, "STA link lost (reason %d); reconnect %d/%d",
                              d->reason, s_retry, STA_MAX_RETRY);
                     esp_wifi_connect();
+                    status_led_set_state(STATUS_LED_WIFI_CONNECTING);
+                } else {
+                    // Count consecutive failures in a 60 s window so a persistent
+                    // problem shows as red instead of a steady "disconnected".
+                    int64_t now = esp_timer_get_time();
+                    if (s_fail_window_us == 0 || now - s_fail_window_us > 60LL * 1000000) {
+                        s_fail_window_us = now;
+                        s_fail_count = 0;
+                    }
+                    s_fail_count++;
+                    status_led_set_state(s_fail_count > 5 ? STATUS_LED_ERROR
+                                                          : STATUS_LED_WIFI_DISCONNECTED);
                 }
                 break;
             }
@@ -135,6 +157,9 @@ static void sta_event_handler(void* arg, esp_event_base_t event_base,
         snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&ev->ip_info.ip));
         s_state = STA_CONNECTED;
         s_retry = 0;
+        s_fail_count = 0;
+        s_fail_window_us = 0;
+        status_led_set_state(STATUS_LED_READY);
         if (s_wifi_event_group) {
             xEventGroupSetBits(s_wifi_event_group, STA_CONNECTED_BIT);
         }
@@ -224,6 +249,7 @@ void init_wifi_sta(void)
         }
     } else {
         ESP_LOGI(TAG, "No saved STA credentials; station idle");
+        status_led_set_state(STATUS_LED_AP_MODE);
     }
 }
 
@@ -259,6 +285,11 @@ static esp_err_t reply_json(httpd_req_t* req, const char* status_line, const cha
     httpd_resp_set_status(req, status_line);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t reject_unauthorized(httpd_req_t* req)
+{
+    return reply_json(req, "401 Unauthorized", "{\"error\":\"Authentication required\"}");
 }
 
 static int cmp_rssi_desc(const void* a, const void* b)
@@ -339,6 +370,9 @@ static void handle_scan_done(void)
 
 esp_err_t handle_wifi_scan(httpd_req_t* req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     if (s_scan_in_progress) {
         return reply_json(req, "202 Accepted", "{\"status\":\"scanning\"}");
     }
@@ -376,6 +410,9 @@ esp_err_t handle_wifi_scan(httpd_req_t* req)
 
 esp_err_t handle_wifi_scan_results(httpd_req_t* req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     if (s_scan_mutex) {
         xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
     }
@@ -400,6 +437,9 @@ esp_err_t handle_wifi_scan_results(httpd_req_t* req)
 
 esp_err_t handle_wifi_connect(httpd_req_t* req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     char body[256];
     if (read_body(req, body, sizeof(body)) <= 0) {
         return reply_json(req, "400 Bad Request", "{\"error\":\"Empty body\"}");
@@ -438,6 +478,7 @@ esp_err_t handle_wifi_connect(httpd_req_t* req)
             xEventGroupClearBits(s_wifi_event_group, STA_CONNECTED_BIT);
         }
         s_state = STA_CONNECTING;
+        status_led_set_state(STATUS_LED_WIFI_CONNECTING);
         // Tear down any existing link without reporting it as a drop; the
         // DISCONNECTED event it produces is consumed by the guard above.
         if (was_connected) {
@@ -461,6 +502,9 @@ esp_err_t handle_wifi_connect(httpd_req_t* req)
 
 esp_err_t handle_wifi_status(httpd_req_t* req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     bool connected = (s_state == STA_CONNECTED);
     int rssi = 0;
     if (connected) {
@@ -495,6 +539,9 @@ esp_err_t handle_wifi_status(httpd_req_t* req)
 
 esp_err_t handle_wifi_disconnect(httpd_req_t* req)
 {
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
     s_retry = 0;
     s_ssid[0] = '\0';
     s_ip[0] = '\0';
@@ -507,6 +554,7 @@ esp_err_t handle_wifi_disconnect(httpd_req_t* req)
     clear_sta_creds();
 
     s_state = STA_IDLE;
+    status_led_set_state(STATUS_LED_AP_MODE);
     if (s_wifi_event_group) {
         xEventGroupClearBits(s_wifi_event_group, STA_CONNECTED_BIT);
     }

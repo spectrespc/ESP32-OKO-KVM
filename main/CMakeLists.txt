@@ -14,9 +14,9 @@ if(NOT HTTP_TESTS_GEN_RC EQUAL 0)
 endif()
 
 idf_component_register(
-    SRCS "main.c" "pins.c" "uart_handler.c" "http_server.c" "sd_handler.c" "sensor_handler.c" "config.c" "wifi_ap.c" "wifi_scan.c" "self_test.c" "pin_validation.c" "telnet_bridge.c" "web_handlers.c" "log_handler.c" "system_handler.c" "ext_control.c"
+    SRCS "main.c" "pins.c" "uart_handler.c" "http_server.c" "sd_handler.c" "sensor_handler.c" "config.c" "wifi_ap.c" "wifi_scan.c" "self_test.c" "pin_validation.c" "telnet_bridge.c" "web_handlers.c" "log_handler.c" "system_handler.c" "ext_control.c" "status_led.c" "auth_handler.c"
     INCLUDE_DIRS "." "${CMAKE_CURRENT_BINARY_DIR}"
-    REQUIRES esp_driver_uart esp_driver_sdspi fatfs esp_http_server nvs_flash esp_wifi esp_driver_spi esp_driver_i2c esp_driver_gpio esp_timer esp_netif esp_http_client lwip cjson spiffs mqtt
+    REQUIRES esp_driver_uart esp_driver_sdspi fatfs esp_http_server nvs_flash esp_wifi esp_driver_spi esp_driver_i2c esp_driver_gpio esp_timer esp_netif esp_http_client lwip cjson spiffs mqtt mbedtls
 )
 
 # Enable exFAT support in the FatFs library. IDF v6.0.2 hardcodes

@@ -43,7 +43,7 @@
 | `pin_sdspi_sclk` | u32 | `19` | `pins.sdspi_sclk` | SD SCLK |
 | `pin_i2c_sda` | u32 | `6` | `pins.i2c_sda` | I2C SDA |
 | `pin_i2c_scl` | u32 | `7` | `pins.i2c_scl` | I2C SCL |
-| `pin_sensor_1` | u32 | `8` | `pins.sensor_1` | Универсальный GPIO 1 |
+| `pin_sensor_1` | u32 | `-1` | `pins.sensor_1` | Универсальный GPIO 1 (по умолчанию не назначен; GPIO8 занят WS2812) |
 | `pin_sensor_2` | u32 | `9` | `pins.sensor_2` | Универсальный GPIO 2 |
 | `pin_led_red` | u32 | `14` | `pins.led_red` | Красный LED |
 | `pin_led_green` | u32 | `15` | `pins.led_green` | Зелёный LED |
@@ -66,8 +66,25 @@
 
 > `GET /config` намеренно **не возвращает** `wifi_password` и `sta_password`.
 
+> `pins.*` со значением `-1` (`GPIO_NUM_NC`) означают «не назначен». GPIO8
+> зарезервирован под WS2812 статус-светодиод и не может быть назначен ни одной
+> роли (ошибка `PIN_RESERVED`).
+
 > `ext_pwr_state` доступно только для чтения: оно изменяется лишь при вызове
 > `POST /ext/power`, но **не** через `POST /config`.
+
+## Учётные данные Web UI
+
+Web-креды хранятся отдельно, в пространстве имён NVS `auth`:
+
+| Ключ | Тип | По умолчанию | Примечания |
+|------|-----|--------------|------------|
+| `user` | str | `admin` | Логин Web UI |
+| `pass` | str | SHA-256(`admin`) | Хеш пароля (64 hex-символа), без соли |
+
+По умолчанию: **`admin` / `admin`** (WiFi AP: `ESP32-Gateway` / `gateway123`).
+Смена производится через `POST /auth/password` или вкладку **Account**;
+она завершает все активные сессии.
 
 ## Формат JSON для `POST /config`
 
@@ -209,8 +226,10 @@ curl -X POST http://192.168.4.1/system/reset
 конфигурацию к заводским значениям, и перезагружает устройство. Ответ
 `{"status":"resetting"}` отправляется до перезапуска.
 
-> Сброс удаляет также учётные данные станции (`sta_ssid` / `sta_password`).
-> SoftAP вернётся к значениям по умолчанию (`ESP32-Gateway` / `gateway123`).
+> Сброс удаляет также учётные данные станции (`sta_ssid` / `sta_password`) и
+> Web-креды (пространство `auth`), поэтому после перезагрузки снова действуют
+> `admin` / `admin`. SoftAP вернётся к значениям по умолчанию
+> (`ESP32-Gateway` / `gateway123`).
 
 ## Резервное копирование и восстановление
 
