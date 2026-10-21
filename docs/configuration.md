@@ -37,14 +37,14 @@
 | `pin_uart0_rx` | u32 | `17` | `pins.uart0_rx` | Пин UART0 RX |
 | `pin_uart1_tx` | u32 | `4` | `pins.uart1_tx` | Пин UART1 TX |
 | `pin_uart1_rx` | u32 | `5` | `pins.uart1_rx` | Пин UART1 RX |
-| `pin_sdspi_cs` | u32 | `10` | `pins.sdspi_cs` | SD chip select |
-| `pin_sdspi_mosi` | u32 | `11` | `pins.sdspi_mosi` | SD MOSI |
-| `pin_sdspi_miso` | u32 | `18` | `pins.sdspi_miso` | SD MISO |
-| `pin_sdspi_sclk` | u32 | `19` | `pins.sdspi_sclk` | SD SCLK |
+| `pin_sdspi_cs` | u32 | `18` | `pins.sdspi_cs` | SD chip select |
+| `pin_sdspi_mosi` | u32 | `1` | `pins.sdspi_mosi` | SD MOSI |
+| `pin_sdspi_miso` | u32 | `3` | `pins.sdspi_miso` | SD MISO |
+| `pin_sdspi_sclk` | u32 | `0` | `pins.sdspi_sclk` | SD SCLK |
 | `pin_i2c_sda` | u32 | `6` | `pins.i2c_sda` | I2C SDA |
 | `pin_i2c_scl` | u32 | `7` | `pins.i2c_scl` | I2C SCL |
 | `pin_sensor_1` | u32 | `-1` | `pins.sensor_1` | Универсальный GPIO 1 (по умолчанию не назначен; GPIO8 занят WS2812) |
-| `pin_sensor_2` | u32 | `9` | `pins.sensor_2` | Универсальный GPIO 2 |
+| `pin_sensor_2` | u32 | `-1` | `pins.sensor_2` | Универсальный GPIO 2 (по умолчанию не назначен) |
 | `pin_led_red` | u32 | `14` | `pins.led_red` | Красный LED |
 | `pin_led_green` | u32 | `15` | `pins.led_green` | Зелёный LED |
 | `wifi_ssid` | str | (нет) | `wifi_ssid` | Переопределение SSID SoftAP (≤31) |
@@ -55,8 +55,8 @@
 | `mqtt_topic` | str | (нет) | `mqtt_topic_prefix` | Префикс топика (≤64, по умолчанию `gateway`) |
 | `ext_pwr_en` | u8 | `0` | `ext_pwr_enable` | Управление питанием внешнего устройства вкл/выкл |
 | `ext_rst_en` | u8 | `0` | `ext_rst_enable` | Управление сбросом внешнего устройства вкл/выкл |
-| `ext_pwr_pin` | u32 | `20` | `pins.ext_pwr` | GPIO питания внешнего устройства |
-| `ext_rst_pin` | u32 | `21` | `pins.ext_rst` | GPIO сброса внешнего устройства |
+| `ext_pwr_pin` | u32 | `19` | `pins.ext_pwr` | GPIO питания внешнего устройства |
+| `ext_rst_pin` | u32 | `20` | `pins.ext_rst` | GPIO сброса внешнего устройства |
 | `ext_pwr_pol` | u8 | `1` | `ext_pwr_pol` | Полярность питания (0=active-low, 1=active-high) |
 | `ext_rst_pol` | u8 | `0` | `ext_rst_pol` | Полярность сброса (0=active-low, 1=active-high) |
 | `ext_rst_ms` | u32 | `100` | `ext_rst_pulse_ms` | Длительность импульса сброса, мс (10–5000) |

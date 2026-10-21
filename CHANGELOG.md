@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-10-21
+
+### Changed
+- **GPIO reassignment:** SD-карта перенесена на CS=18, MOSI=1, MISO=3, SCLK=0;
+  внешнее реле (`ext_pwr`) на GPIO19, `ext_rst` на GPIO20. Sensor 1/2 = NC.
+  Заводские значения в `pins.h` и документация приведены в соответствие с
+  фактической распиновкой.
+
+### Fixed
+- Реле на GPIO19 не срабатывало из-за неверной полярности (active-low в
+  сохранённом NVS при active-high модуле). Кодовый дефолт `ext_pwr_pol = 1`
+  уже корректен; исправление выполняется сменой полярности в веб-интерфейсе.
+
 ## [1.3.0] — 2026-10-17
 
 ### Added

@@ -213,10 +213,11 @@ curl http://192.168.4.1/config
   "pins": {
     "uart0_tx": 16, "uart0_rx": 17,
     "uart1_tx": 4,  "uart1_rx": 5,
-    "sdspi_cs": 10, "sdspi_mosi": 11, "sdspi_miso": 18, "sdspi_sclk": 19,
+    "sdspi_cs": 18, "sdspi_mosi": 1,  "sdspi_miso": 3,  "sdspi_sclk": 0,
     "i2c_sda": 6,   "i2c_scl": 7,
-    "sensor_1": -1, "sensor_2": 9,
-    "led_red": 14,  "led_green": 15
+    "sensor_1": -1, "sensor_2": -1,
+    "led_red": 14,  "led_green": 15,
+    "ext_pwr": 19,  "ext_rst": 20
   }
 }
 ```
@@ -360,25 +361,27 @@ curl -X POST http://192.168.4.1/system/reset    # -> 200, стереть NVS, п
 | UART0 RX   | 17                | IN          | Консоль USB Serial/JTAG             |
 | UART1 TX   | 4                 | OUT         | Мост датчиков (9600)                |
 | UART1 RX   | 5                 | IN          | Мост датчиков                       |
-| SDSPI CS   | 10                | OUT         | Выбор кристалла SD                  |
-| SDSPI MOSI | 11                | OUT         | Данные SD (out)                     |
-| SDSPI MISO | 18                | IN          | Данные SD (in)                      |
-| SDSPI SCLK | 19                | OUT         | Тактирование SD                     |
+| SDSPI CS   | 18                | OUT         | Выбор кристалла SD                  |
+| SDSPI MOSI | 1                 | OUT         | Данные SD (out)                     |
+| SDSPI MISO | 3                 | IN          | Данные SD (in)                      |
+| SDSPI SCLK | 0                 | OUT         | Тактирование SD                     |
 | I2C SDA    | 6                 | OD          | Данные шины датчиков                |
 | I2C SCL    | 7                 | OD          | Тактирование шины датчиков          |
-| Sensor 1   | 8                 | IN/OUT      | Универсальный GPIO (strapping-пин)  |
-| Sensor 2   | 9                 | IN/OUT      | Универсальный GPIO (strapping-пин)  |
+| Sensor 1   | — (NC)            | IN/OUT      | Не назначен                         |
+| Sensor 2   | — (NC)            | IN/OUT      | Не назначен                         |
+| WS2812     | 8                 | OUT         | Статусный RGB-светодиод (зарезервирован) |
 | LED red    | 14                | OUT         | Статусный светодиод                 |
 | LED green  | 15                | OUT         | Статусный светодиод                 |
-| Ext Power  | 20                | OUT         | Питание внешнего устройства         |
-| Ext Reset  | 21                | OUT         | Сброс внешнего устройства           |
+| Ext Power  | 19                | OUT         | Питание внешнего устройства (реле)  |
+| Ext Reset  | 20                | OUT         | Сброс внешнего устройства           |
 
 > **Примечание о USB-консоли:** GPIO 12 и 13 — это нативные линии USB D-/D+
 > ESP32-C6. Пока активен `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` (значение по
 > умолчанию), назначать их нельзя, а валидация отклоняет любую попытку
-> (`PIN_USB_CONFLICT`). Поэтому заводские значения SDSPI MISO/SCLK — GPIO 18/19,
-> а не 12/13. Пины GPIO 2, 8 и 9 являются strapping-пинами и вызывают только
-> предупреждение при загрузке.
+> (`PIN_USB_CONFLICT`). GPIO8 зарезервирован под WS2812 статус-светодиод и не
+> может быть назначен ни одной роли. GPIO9 и GPIO15 — strapping-пины ESP32-C6
+> (вместе с MTMS/MTDI); их использование как GPIO разрешено, но влияет на режим
+> загрузки. GPIO0 — обычный вывод, не участвующий в boot-strapping.
 
 ## Поддержка I2C-датчиков
 
@@ -709,10 +712,11 @@ curl http://192.168.4.1/config
   "pins": {
     "uart0_tx": 16, "uart0_rx": 17,
     "uart1_tx": 4,  "uart1_rx": 5,
-    "sdspi_cs": 10, "sdspi_mosi": 11, "sdspi_miso": 18, "sdspi_sclk": 19,
+    "sdspi_cs": 18, "sdspi_mosi": 1,  "sdspi_miso": 3,  "sdspi_sclk": 0,
     "i2c_sda": 6,   "i2c_scl": 7,
-    "sensor_1": -1, "sensor_2": 9,
-    "led_red": 14,  "led_green": 15
+    "sensor_1": -1, "sensor_2": -1,
+    "led_red": 14,  "led_green": 15,
+    "ext_pwr": 19,  "ext_rst": 20
   }
 }
 ```
@@ -851,25 +855,27 @@ persisted to NVS.
 | UART0 RX    | 17           | IN        | USB Serial/JTAG console            |
 | UART1 TX    | 4            | OUT       | Sensor bridge (9600)               |
 | UART1 RX    | 5            | IN        | Sensor bridge                      |
-| SDSPI CS    | 10           | OUT       | SD chip select                     |
-| SDSPI MOSI  | 11           | OUT       | SD data out                        |
-| SDSPI MISO  | 18           | IN        | SD data in                         |
-| SDSPI SCLK  | 19           | OUT       | SD clock                           |
+| SDSPI CS    | 18           | OUT       | SD chip select                     |
+| SDSPI MOSI  | 1            | OUT       | SD data out                        |
+| SDSPI MISO  | 3            | IN        | SD data in                         |
+| SDSPI SCLK  | 0            | OUT       | SD clock                           |
 | I2C SDA     | 6            | OD        | Sensor bus data                    |
 | I2C SCL     | 7            | OD        | Sensor bus clock                   |
-| Sensor 1    | 8            | IN/OUT    | Generic GPIO (strapping pin)       |
-| Sensor 2    | 9            | IN/OUT    | Generic GPIO (strapping pin)       |
+| Sensor 1    | — (NC)       | IN/OUT    | Unassigned                         |
+| Sensor 2    | — (NC)       | IN/OUT    | Unassigned                         |
+| WS2812      | 8            | OUT       | Status RGB LED (reserved)          |
 | LED red     | 14           | OUT       | Status LED                         |
 | LED green   | 15           | OUT       | Status LED                         |
-| Ext Power   | 20           | OUT       | External device power              |
-| Ext Reset   | 21           | OUT       | External device reset              |
+| Ext Power   | 19           | OUT       | External device power (relay)      |
+| Ext Reset   | 20           | OUT       | External device reset              |
 
 > **USB console note:** GPIO 12 and 13 are the ESP32-C6 native USB D-/D+ lines.
 > While `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` (the default) they cannot be used
 > as GPIO, and pin validation rejects any assignment to them
-> (`PIN_USB_CONFLICT`). The factory SDSPI MISO/SCLK defaults are therefore GPIO
-> 18/19, not 12/13. GPIO 2, 8 and 9 are strapping pins and only produce a
-> warning.
+> (`PIN_USB_CONFLICT`). GPIO8 is reserved for the WS2812 status LED and cannot be
+> assigned to any role. GPIO9 and GPIO15 are ESP32-C6 strapping pins (together
+> with MTMS/MTDI); using them as GPIO is allowed but affects the boot mode.
+> GPIO0 is a regular IO and does not participate in boot strapping.
 
 ## I2C Sensor Support
 

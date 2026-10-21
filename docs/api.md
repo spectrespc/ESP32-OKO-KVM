@@ -123,11 +123,11 @@ curl http://192.168.4.1/config
   "pins": {
     "uart0_tx": 16, "uart0_rx": 17,
     "uart1_tx": 4,  "uart1_rx": 5,
-    "sdspi_cs": 10, "sdspi_mosi": 11, "sdspi_miso": 18, "sdspi_sclk": 19,
+    "sdspi_cs": 18, "sdspi_mosi": 1,  "sdspi_miso": 3,  "sdspi_sclk": 0,
     "i2c_sda": 6,   "i2c_scl": 7,
-    "sensor_1": 8,  "sensor_2": 9,
+    "sensor_1": -1, "sensor_2": -1,
     "led_red": 14,  "led_green": 15,
-    "ext_pwr": 20,  "ext_rst": 21
+    "ext_pwr": 19,  "ext_rst": 20
   }
 }
 ```
@@ -441,7 +441,7 @@ curl -X POST http://192.168.4.1/system/reset
 ## Управление внешним устройством
 
 Три эндпоинта управляют линией питания и сброса подключённого внешнего
-устройства (два GPIO, по умолчанию GPIO20/21). Подсистемы включаются отдельно
+устройства (два GPIO, по умолчанию GPIO19/20). Подсистемы включаются отдельно
 через `ext_pwr_enable` / `ext_rst_enable` в `POST /config`; по умолчанию обе
 выключены.
 

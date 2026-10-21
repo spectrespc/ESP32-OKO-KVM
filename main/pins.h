@@ -9,17 +9,20 @@
 #define PIN_DEFAULT_UART0_RX    GPIO_NUM_17
 #define PIN_DEFAULT_UART1_TX    GPIO_NUM_4
 #define PIN_DEFAULT_UART1_RX    GPIO_NUM_5
-#define PIN_DEFAULT_SDSPI_CS    GPIO_NUM_10
-#define PIN_DEFAULT_SDSPI_MOSI  GPIO_NUM_11
-#define PIN_DEFAULT_SDSPI_MISO  GPIO_NUM_18
-#define PIN_DEFAULT_SDSPI_SCLK  GPIO_NUM_19
+// SD card (SPI) wiring of the reference board. GPIO0 is a regular IO on the
+// ESP32-C6 (its strapping pins are GPIO8/GPIO9/GPIO15, MTMS and MTDI).
+#define PIN_DEFAULT_SDSPI_CS    GPIO_NUM_18
+#define PIN_DEFAULT_SDSPI_MOSI  GPIO_NUM_1
+#define PIN_DEFAULT_SDSPI_MISO  GPIO_NUM_3
+#define PIN_DEFAULT_SDSPI_SCLK  GPIO_NUM_0
 #define PIN_DEFAULT_I2C_SDA     GPIO_NUM_6
 #define PIN_DEFAULT_I2C_SCL     GPIO_NUM_7
 // GPIO8 now carries the fixed WS2812 status LED, so the sensor_1 role defaults
 // to unassigned. Existing devices whose NVS still maps sensor_1 to GPIO8 are
-// migrated to GPIO_NUM_NC in load_config().
+// migrated to GPIO_NUM_NC in load_config(). The sensor roles are unassigned by
+// default; assign them via POST /config when a generic GPIO is wired.
 #define PIN_DEFAULT_SENSOR_1    GPIO_NUM_NC
-#define PIN_DEFAULT_SENSOR_2    GPIO_NUM_9
+#define PIN_DEFAULT_SENSOR_2    GPIO_NUM_NC
 
 // Fixed WS2812 status LED data line. Not configurable: reserved in
 // pin_validation so no role may claim it.
@@ -29,8 +32,8 @@
 // External device power/reset. Both default to currently-free GPIOs so the
 // roles stay valid even while the subsystem is disabled (pin validation checks
 // every role unconditionally).
-#define PIN_DEFAULT_EXT_PWR     GPIO_NUM_20
-#define PIN_DEFAULT_EXT_RST     GPIO_NUM_21
+#define PIN_DEFAULT_EXT_PWR     GPIO_NUM_19
+#define PIN_DEFAULT_EXT_RST     GPIO_NUM_20
 
 // Pin initialization (config-driven; skips disabled subsystems).
 void init_pins(void);
