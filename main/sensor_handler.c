@@ -36,8 +36,8 @@ static _Atomic(esp_mqtt_client_handle_t) s_mqtt = NULL;
 
 // SHT21 fixed 7-bit address.
 #define SHT21_ADDR     0x40
-#define SHT21_CMD_TEMP_HOLD 0xF3  // measure temperature, hold master
-#define SHT21_CMD_RH_HOLD   0xF5  // measure relative humidity, hold master
+#define SHT21_CMD_TEMP_NOHOLD 0xF3  // measure temperature, no hold master
+#define SHT21_CMD_RH_NOHOLD   0xF5  // measure relative humidity, no hold master
 #define SHT21_CMD_SOFT_RESET 0xFE
 
 // Register map shared by INA219 and INA226.
@@ -90,25 +90,33 @@ static bool i2c_read_reg16(i2c_master_dev_handle_t dev, uint8_t reg, uint16_t* o
 }
 
 // --- SHT21 (temperature + humidity) ------------------------------------------
-// Hold-master measurement: the sensor stretches SCL until the conversion is
-// done, so a generous transfer timeout covers the ~85 ms worst case.
+// No-hold-master measurement: the sensor releases the bus right after the
+// command and converts on its own. The master must wait for the conversion
+// (14-bit T ~85 ms worst case, 12-bit RH ~30 ms) before reading the result;
+// reading earlier makes the sensor NACK.
 static bool sht21_measure(i2c_master_dev_handle_t dev, uint8_t cmd, uint8_t out[3])
 {
-    return i2c_master_transmit_receive(dev, &cmd, 1, out, 3, 100) == ESP_OK;
+    if (i2c_master_transmit(dev, &cmd, 1, I2C_XFER_MS) != ESP_OK) {
+        return false;
+    }
+    TickType_t wait = (cmd == SHT21_CMD_TEMP_NOHOLD) ? pdMS_TO_TICKS(85)
+                                                     : pdMS_TO_TICKS(30);
+    vTaskDelay(wait);
+    return i2c_master_receive(dev, out, 3, I2C_XFER_MS) == ESP_OK;
 }
 
 static bool sht21_read(i2c_master_dev_handle_t dev, int16_t* temp10, uint16_t* rh10)
 {
     uint8_t b[3];
 
-    if (!sht21_measure(dev, SHT21_CMD_TEMP_HOLD, b)) {
+    if (!sht21_measure(dev, SHT21_CMD_TEMP_NOHOLD, b)) {
         return false;
     }
     uint16_t traw = ((uint16_t)b[0] << 8) | (b[1] & 0xFC);
     // T(0.1 °C) = -468 + 1757 * raw / 65536
     *temp10 = (int16_t)(-468 + (int32_t)((1757LL * traw) / 65536));
 
-    if (!sht21_measure(dev, SHT21_CMD_RH_HOLD, b)) {
+    if (!sht21_measure(dev, SHT21_CMD_RH_NOHOLD, b)) {
         return false;
     }
     uint16_t rraw = ((uint16_t)b[0] << 8) | (b[1] & 0xFC);
