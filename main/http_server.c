@@ -12,10 +12,12 @@
 #include "system_handler.h"
 #include "ext_control.h"
 #include "auth_handler.h"
+#include "ota_handler.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 static const char* TAG = "http_server";
 static httpd_handle_t server = NULL;
@@ -112,6 +114,23 @@ static bool get_json_u16(cJSON* root, const char* key, uint16_t* out, bool* inva
     return true;
 }
 
+// Range-bounded unsigned 32-bit field (e.g. the OTA check interval).
+static bool get_json_u32(cJSON* root, const char* key, uint32_t* out,
+                         uint32_t min, uint32_t max, bool* invalid)
+{
+    cJSON* it = cJSON_GetObjectItem(root, key);
+    if (!it || !cJSON_IsNumber(it)) {
+        return false;
+    }
+    double v = it->valuedouble;
+    if (v != (double)(int64_t)v || v < (double)min || v > (double)max) {
+        *invalid = true;
+        return false;
+    }
+    *out = (uint32_t)v;
+    return true;
+}
+
 static bool get_json_pin(cJSON* obj, const char* key, gpio_num_t* out, bool* invalid)
 {
     cJSON* it = cJSON_GetObjectItem(obj, key);
@@ -144,6 +163,70 @@ static bool get_json_string(cJSON* root, const char* key, char** slot)
     return false;
 }
 
+// Percent-decodes a query value (%XX); a literal '+' is kept as-is because the
+// web UI uses encodeURIComponent(), which never emits '+'.
+static bool url_decode(const char* in, char* out, size_t out_len)
+{
+    size_t j = 0;
+    for (size_t i = 0; in[i]; i++) {
+        char c = in[i];
+        if (c == '%') {
+            if (!isxdigit((unsigned char)in[i + 1]) ||
+                !isxdigit((unsigned char)in[i + 2])) {
+                return false;
+            }
+            char hex[3] = { in[i + 1], in[i + 2], '\0' };
+            c = (char)strtol(hex, NULL, 16);
+            i += 2;
+        }
+        if (j + 1 >= out_len) {
+            return false;
+        }
+        out[j++] = c;
+    }
+    out[j] = '\0';
+    return true;
+}
+
+// Extracts and decodes a query-string parameter.
+// Returns 1 when present, 0 when absent, -1 when malformed or too long.
+static int get_query_param(httpd_req_t *req, const char* key, char* out, size_t out_len)
+{
+    char query[512];
+    esp_err_t qerr = httpd_req_get_url_query_str(req, query, sizeof(query));
+    if (qerr == ESP_ERR_NOT_FOUND || qerr == ESP_FAIL) {
+        return 0;
+    }
+    if (qerr != ESP_OK) {
+        return -1;
+    }
+    char raw[512];
+    esp_err_t err = httpd_query_key_value(query, key, raw, sizeof(raw));
+    if (err == ESP_ERR_NOT_FOUND) {
+        return 0;
+    }
+    if (err != ESP_OK) {
+        return -1;
+    }
+    return url_decode(raw, out, out_len) ? 1 : -1;
+}
+
+// Builds a safe Content-Disposition filename from a relative path.
+static void attachment_name(const char* path, char* out, size_t out_len)
+{
+    const char* base = strrchr(path ? path : "", '/');
+    base = base ? base + 1 : (path ? path : "");
+    if (!base[0]) {
+        base = "download.bin";
+    }
+    size_t j = 0;
+    for (const char* p = base; *p && j + 1 < out_len; p++) {
+        unsigned char c = (unsigned char)*p;
+        out[j++] = (c >= 0x20 && c != 0x7F && c != '"' && c != '\\') ? (char)c : '_';
+    }
+    out[j] = '\0';
+}
+
 // --- Handlers ----------------------------------------------------------------
 
 static esp_err_t handle_get_config(httpd_req_t *req)
@@ -161,6 +244,25 @@ static esp_err_t handle_get_config(httpd_req_t *req)
         httpd_resp_send(req, "Failed to get config", -1);
     }
     return ESP_OK;
+}
+
+static esp_err_t handle_get_config_export(httpd_req_t *req)
+{
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
+    char* json = get_config_export_json();
+    if (!json) {
+        return reply_json(req, "500 Internal Server Error",
+                          "{\"error\":\"Failed to export configuration\"}");
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       "attachment; filename=\"gateway-config.json\"");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = httpd_resp_send(req, json, strlen(json));
+    free(json);
+    return err;
 }
 
 static esp_err_t handle_post_config(httpd_req_t *req)
@@ -188,6 +290,7 @@ static esp_err_t handle_post_config(httpd_req_t *req)
     candidate.server_url = cfg->server_url ? strdup(cfg->server_url) : NULL;
     candidate.mqtt_broker_url = cfg->mqtt_broker_url ? strdup(cfg->mqtt_broker_url) : NULL;
     candidate.mqtt_topic_prefix = cfg->mqtt_topic_prefix ? strdup(cfg->mqtt_topic_prefix) : NULL;
+    candidate.ota_url = cfg->ota_url ? strdup(cfg->ota_url) : NULL;
 
     bool touched = false;
     bool invalid = false;
@@ -207,6 +310,10 @@ static esp_err_t handle_post_config(httpd_req_t *req)
     touched |= get_json_u8(root, "ina226_sd_log", &candidate.ina226_sd_log, &invalid);
     touched |= get_json_u8(root, "env_sd_log", &candidate.env_sd_log, &invalid);
     touched |= get_json_u8(root, "mqtt_enable", &candidate.mqtt_enable, &invalid);
+    touched |= get_json_u8(root, "ota_enable", &candidate.ota_enable, &invalid);
+    touched |= get_json_u32(root, "ota_check_interval_min",
+                            &candidate.ota_check_interval_min,
+                            OTA_CHECK_INTERVAL_MIN, OTA_CHECK_INTERVAL_MAX, &invalid);
 
     // External device power/reset control (state is not settable here).
     touched |= get_json_u8(root, "ext_pwr_enable", &candidate.ext_pwr_enable, &invalid);
@@ -254,7 +361,8 @@ static esp_err_t handle_post_config(httpd_req_t *req)
     bool url_set  = get_json_string(root, "server_url", &candidate.server_url);
     bool mqtt_url_set   = get_json_string(root, "mqtt_broker_url", &candidate.mqtt_broker_url);
     bool mqtt_topic_set = get_json_string(root, "mqtt_topic_prefix", &candidate.mqtt_topic_prefix);
-    touched |= ssid_set | pw_set | url_set | mqtt_url_set | mqtt_topic_set;
+    bool ota_url_set    = get_json_string(root, "ota_url", &candidate.ota_url);
+    touched |= ssid_set | pw_set | url_set | mqtt_url_set | mqtt_topic_set | ota_url_set;
 
     // Reject over-long strings rather than letting the driver/NVS truncate
     // them silently (AP ssid buffer is 32 bytes incl. NUL, password 64, and
@@ -263,7 +371,8 @@ static esp_err_t handle_post_config(httpd_req_t *req)
                     (pw_set && strlen(candidate.wifi_password) > 63) ||
                     (url_set && strlen(candidate.server_url) > 255) ||
                     (mqtt_url_set && strlen(candidate.mqtt_broker_url) > 255) ||
-                    (mqtt_topic_set && strlen(candidate.mqtt_topic_prefix) > 64);
+                    (mqtt_topic_set && strlen(candidate.mqtt_topic_prefix) > 64) ||
+                    (ota_url_set && strlen(candidate.ota_url) > 255);
 
     char err[192] = { 0 };
     bool ok = false;
@@ -271,7 +380,7 @@ static esp_err_t handle_post_config(httpd_req_t *req)
         snprintf(err, sizeof(err), "Numeric value out of range");
     } else if (too_long) {
         snprintf(err, sizeof(err),
-                 "String too long (wifi_ssid<=31, wifi_password<=63, server_url<=255, mqtt_broker_url<=255, mqtt_topic_prefix<=64)");
+                 "String too long (wifi_ssid<=31, wifi_password<=63, server_url<=255, mqtt_broker_url<=255, mqtt_topic_prefix<=64, ota_url<=255)");
     } else if (!touched) {
         snprintf(err, sizeof(err), "No valid configuration fields provided");
     } else {
@@ -283,6 +392,7 @@ static esp_err_t handle_post_config(httpd_req_t *req)
     free(candidate.server_url);
     free(candidate.mqtt_broker_url);
     free(candidate.mqtt_topic_prefix);
+    free(candidate.ota_url);
     cJSON_Delete(root);
 
     if (invalid || too_long || !touched || !ok) {
@@ -358,6 +468,173 @@ static esp_err_t handle_post_sd_write(httpd_req_t *req)
     char resp[64];
     snprintf(resp, sizeof(resp), "{\"written\":%d}", received);
     return reply_json(req, "200 OK", resp);
+}
+
+static esp_err_t handle_get_sd_list(httpd_req_t *req)
+{
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
+
+    char path[256];
+    int q = get_query_param(req, "path", path, sizeof(path));
+    if (q < 0) {
+        return reply_json(req, "400 Bad Request", "{\"error\":\"Invalid path\"}");
+    }
+    if (q == 0) {
+        path[0] = '\0';
+    }
+    if (!sd_rel_path_valid(path)) {
+        return reply_json(req, "400 Bad Request", "{\"error\":\"Invalid path\"}");
+    }
+
+    const app_config_t* cfg = get_config();
+    if (!cfg->sd_enable || get_sd_status() != SD_STATUS_READY) {
+        return reply_json(req, "503 Service Unavailable", "{\"error\":\"SD disabled\"}");
+    }
+
+    char* json = NULL;
+    int rc = sd_list_dir(path, &json);
+    switch (rc) {
+        case SD_LIST_OK:
+            break;
+        case SD_LIST_ERR_INVALID_PATH:
+            return reply_json(req, "400 Bad Request", "{\"error\":\"Invalid path\"}");
+        case SD_LIST_ERR_NOT_MOUNTED:
+            return reply_json(req, "503 Service Unavailable", "{\"error\":\"SD disabled\"}");
+        case SD_LIST_ERR_OPEN:
+            return reply_json(req, "404 Not Found", "{\"error\":\"Directory not found\"}");
+        default:
+            return reply_json(req, "500 Internal Server Error",
+                              "{\"error\":\"Failed to list directory\"}");
+    }
+
+    esp_err_t err = reply_json(req, "200 OK", json);
+    free(json);
+    return err;
+}
+
+static esp_err_t handle_get_sd_download(httpd_req_t *req)
+{
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
+
+    char path[256];
+    int q = get_query_param(req, "path", path, sizeof(path));
+    if (q < 0) {
+        return reply_json(req, "400 Bad Request", "{\"error\":\"Invalid path\"}");
+    }
+    if (q == 0) {
+        path[0] = '\0';
+    }
+    if (!sd_rel_path_valid(path)) {
+        return reply_json(req, "400 Bad Request", "{\"error\":\"Invalid path\"}");
+    }
+
+    const app_config_t* cfg = get_config();
+    if (!cfg->sd_enable || get_sd_status() != SD_STATUS_READY) {
+        return reply_json(req, "503 Service Unavailable", "{\"error\":\"SD disabled\"}");
+    }
+
+    size_t size = 0;
+    FILE* file = sd_open_file(path, &size);
+    if (!file) {
+        return reply_json(req, "404 Not Found", "{\"error\":\"File not found\"}");
+    }
+
+    char filename[128];
+    attachment_name(path, filename, sizeof(filename));
+
+    char disposition[192];
+    snprintf(disposition, sizeof(disposition),
+             "attachment; filename=\"%s\"", filename);
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Content-Disposition", disposition);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    char buf[512];
+    size_t read;
+    esp_err_t err = ESP_OK;
+    while ((read = fread(buf, 1, sizeof(buf), file)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, read) != ESP_OK) {
+            err = ESP_FAIL;
+            break;
+        }
+    }
+    if (ferror(file) && err == ESP_OK) {
+        err = ESP_FAIL;
+    }
+    fclose(file);
+
+    // Terminate the chunked response on both the success and error paths.
+    httpd_resp_send_chunk(req, NULL, 0);
+    return err;
+}
+
+static esp_err_t handle_get_ota_status(httpd_req_t *req)
+{
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
+    char* json = ota_get_status_json();
+    if (!json) {
+        return reply_json(req, "500 Internal Server Error",
+                          "{\"error\":\"Failed to get OTA status\"}");
+    }
+    esp_err_t err = reply_json(req, "200 OK", json);
+    free(json);
+    return err;
+}
+
+static esp_err_t handle_post_ota_check(httpd_req_t *req)
+{
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
+    if (!request_is_same_origin(req)) {
+        return reply_json(req, "403 Forbidden",
+                          "{\"error\":\"Cross-origin request rejected\"}");
+    }
+
+    const app_config_t* cfg = get_config();
+    if (!cfg->ota_url || cfg->ota_url[0] == '\0') {
+        return reply_json(req, "503 Service Unavailable",
+                          "{\"error\":\"OTA URL not configured\"}");
+    }
+
+    // Consume any (ignored) request body so keep-alive connections stay in sync.
+    char body[64];
+    (void)read_body(req, body, sizeof(body));
+
+    ota_trigger_check();
+    return reply_json(req, "202 Accepted",
+                      "{\"message\":\"OTA check started\"}");
+}
+
+static esp_err_t handle_post_ota_update(httpd_req_t *req)
+{
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
+    if (!request_is_same_origin(req)) {
+        return reply_json(req, "403 Forbidden",
+                          "{\"error\":\"Cross-origin request rejected\"}");
+    }
+
+    const app_config_t* cfg = get_config();
+    if (!cfg->ota_url || cfg->ota_url[0] == '\0') {
+        return reply_json(req, "503 Service Unavailable",
+                          "{\"error\":\"OTA URL not configured\"}");
+    }
+
+    char body[64];
+    (void)read_body(req, body, sizeof(body));
+
+    ota_trigger_update();
+    return reply_json(req, "202 Accepted",
+                      "{\"message\":\"Update started\"}");
 }
 
 static esp_err_t handle_get_ext_status(httpd_req_t *req)
@@ -465,7 +742,7 @@ void init_http_server(void)
     config.server_port = 80;
     config.ctrl_port = 32768;
     config.max_open_sockets = 10;
-    config.max_uri_handlers = 24;
+    config.max_uri_handlers = 32;
     config.max_resp_headers = 8;
     config.backlog_conn = 16;
     config.lru_purge_enable = true;
@@ -487,10 +764,16 @@ void init_http_server(void)
     static const http_endpoint_t endpoints[] = {
         {"/config", HTTP_METHOD_GET, handle_get_config},
         {"/config", HTTP_METHOD_POST, handle_post_config},
+        {"/config/export", HTTP_METHOD_GET, handle_get_config_export},
         {"/sensor", HTTP_METHOD_GET, handle_get_sensor_data},
         {"/sensor", HTTP_METHOD_POST, handle_post_sensor_data},
         {"/sd/status", HTTP_METHOD_GET, handle_get_sd_status},
         {"/sd/write", HTTP_METHOD_POST, handle_post_sd_write},
+        {"/sd/list", HTTP_METHOD_GET, handle_get_sd_list},
+        {"/sd/download", HTTP_METHOD_GET, handle_get_sd_download},
+        {"/ota/status", HTTP_METHOD_GET, handle_get_ota_status},
+        {"/ota/check", HTTP_METHOD_POST, handle_post_ota_check},
+        {"/ota/update", HTTP_METHOD_POST, handle_post_ota_update},
         {"/logs", HTTP_METHOD_GET, handle_get_logs},
         {"/wifi/scan", HTTP_METHOD_GET, handle_wifi_scan},
         {"/wifi/scan/results", HTTP_METHOD_GET, handle_wifi_scan_results},

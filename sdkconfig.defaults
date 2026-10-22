@@ -18,10 +18,17 @@ CONFIG_ESP_MAIN_TASK_AFFINITY=0
 # Flash size (ESP32-C6FH4 has 4MB embedded flash; default 2MB wastes half).
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
-# Partition table - custom layout with a SPIFFS partition for the web UI
-# (see partitions.csv): 2.5M factory app + ~1.5M SPIFFS.
+# Partition table - custom layout with A/B OTA slots plus a SPIFFS partition
+# for the web UI (see partitions.csv): factory 1.625M + ota_0 1.625M + 640K
+# SPIFFS.
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# OTA rollback: a freshly installed image boots as PENDING_VERIFY and is only
+# confirmed by esp_ota_mark_app_valid_cancel_rollback() after the on-boot HTTP
+# self-test passes (see self_test.c). A crash/power loss before that makes the
+# bootloader return to the previous slot.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # SPIFFS (used to serve the SPA from flash)
 CONFIG_SPIFFS_MAX_PARTITIONS=1
@@ -47,5 +54,6 @@ CONFIG_LOG_COLORS=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 
-# Socket pool: default 10 is exhausted by httpd (8) + 2 telnet listeners.
-CONFIG_LWIP_MAX_SOCKETS=16
+# Socket pool: default 10 is exhausted by httpd + telnet listeners. The extra
+# headroom covers OTA downloads and SD file downloads on top of MQTT/telnet.
+CONFIG_LWIP_MAX_SOCKETS=20

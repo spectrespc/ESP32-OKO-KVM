@@ -18,6 +18,7 @@
 #
 # Environment overrides:
 #   IDF_PATH_OVERRIDE, IDF_TOOLS_PATH, PORT, TEST_HOST
+#   TEST_USER, TEST_PASS (web credentials used by `test`, default admin/admin)
 
 set -euo pipefail
 
@@ -30,6 +31,10 @@ ESP_IDF_VERSION_DEFAULT="6.0.2"
 TOOLCHAIN_VER="esp-15.2.0_20251204"
 DEFAULT_PORT="/dev/ttyACM0"
 DEFAULT_TEST_HOST="192.168.4.1"
+# Web UI credentials used by `test` (defaults are restored by the factory reset).
+TEST_USER="${TEST_USER:-admin}"
+TEST_PASS="${TEST_PASS:-admin}"
+COOKIE_JAR=""
 
 # --- Environment setup (manual, no export.sh) ---------------------------------
 setup_env() {
@@ -169,10 +174,16 @@ run_http_test() {
     local method="$1" path="$2" expected="$3"
     local tmp code body
     tmp="$(mktemp)"
-    code="$(curl -sS -m 5 -o "$tmp" -w '%{http_code}' -X "$method" "$TEST_HOST$path" 2>/dev/null || echo 000)"
+    local cookie_args=()
+    if [ -n "$COOKIE_JAR" ] && [ -f "$COOKIE_JAR" ]; then
+        cookie_args=(-b "$COOKIE_JAR")
+    fi
+    code="$(curl -sS -m 5 -o "$tmp" -w '%{http_code}' "${cookie_args[@]}" -X "$method" "$TEST_HOST$path" 2>/dev/null || echo 000)"
     body="$(head -c 200 "$tmp" 2>/dev/null || true)"
     rm -f "$tmp"
-    if [ "$code" = "$expected" ]; then
+    # EXPECTED_STATUS may list alternatives separated by '|' (config-dependent
+    # endpoints such as /sd/*).
+    if [[ "|$expected|" == *"|$code|"* ]]; then
         echo "PASS  $method $path -> $code"
         HTTP_PASS=$((HTTP_PASS + 1))
     else
@@ -192,14 +203,28 @@ cmd_test() {
         echo "WARNING: $host is not reachable. Connect the host to the AP first." >&2
     fi
 
+    COOKIE_JAR="$(mktemp)"
+
+    # All API routes (including /system/reset) require a session. Log in with
+    # the configured credentials first; override with TEST_USER/TEST_PASS.
+    login() {
+        local user="$1" pass="$2"
+        curl -sS -m 5 -o /dev/null -w '%{http_code}' -c "$COOKIE_JAR" \
+            -H 'Content-Type: application/json' \
+            -d "{\"username\":\"$user\",\"password\":\"$pass\"}" \
+            "$TEST_HOST/auth/login" 2>/dev/null || echo 000
+    }
+
     # Reset to factory defaults before testing so the destructive ext/reset and
     # ext/power tests run against a known-clean configuration (both disabled).
     # The device erases NVS and reboots; wait for it to come back.
     echo "Factory-resetting device to known state..."
-    if curl -sS -m 5 -X POST "$TEST_HOST/system/reset" 2>/dev/null; then
+    if [ "$(login "$TEST_USER" "$TEST_PASS")" = "200" ] &&
+       curl -sS -m 5 -b "$COOKIE_JAR" -X POST "$TEST_HOST/system/reset" >/dev/null 2>&1; then
         echo "Reset command sent. Waiting for device to restart..."
     else
-        echo "WARNING: Could not send reset command. Device may be in unknown state." >&2
+        echo "WARNING: Could not authenticate/reset (TEST_USER/TEST_PASS?)." >&2
+        echo "         Continuing against the current configuration." >&2
     fi
 
     # Wait for the SoftAP to reappear (up to 60 seconds).
@@ -215,7 +240,13 @@ cmd_test() {
     done
     if [ "$waited" -ge "$max_wait" ]; then
         echo "ERROR: Device did not come back within ${max_wait}s." >&2
+        rm -f "$COOKIE_JAR"
         return 1
+    fi
+
+    # After a factory reset the credentials are back to admin/admin.
+    if [ "$(login admin admin)" != "200" ]; then
+        echo "WARNING: Post-reset login failed; tests may return 401." >&2
     fi
     echo
 
@@ -225,6 +256,7 @@ cmd_test() {
     local csv="$PROJECT_DIR/tests/http_endpoints.csv"
     if [ ! -f "$csv" ]; then
         echo "ERROR: test matrix not found: $csv" >&2
+        rm -f "$COOKIE_JAR"
         return 1
     fi
     local method path expected
@@ -237,6 +269,7 @@ cmd_test() {
     done < <(tr -d '\r' < "$csv")
     echo
     echo "Summary: $HTTP_PASS passed, $HTTP_FAIL failed"
+    rm -f "$COOKIE_JAR"
     [ "$HTTP_FAIL" -eq 0 ]
 }
 
@@ -252,7 +285,7 @@ cmd_env() {
 }
 
 usage() {
-    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 main() {

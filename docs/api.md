@@ -5,12 +5,15 @@ JSON, если не указано иное.
 
 - **Базовый URL:** `http://192.168.4.1` (адрес SoftAP по умолчанию)
 - **Порт:** 80
-- **Аутентификация:** отсутствует. Устройство рассчитано на доверенную
-  локальную сеть (SoftAP или ваша собственная сеть Wi-Fi). **Не выставляйте
-  устройство в открытый интернет.**
-- **CSRF:** разрушающие эндпоинты `/system/*`, `/ext/power` и `/ext/reset`
-  проверяют заголовок `Origin` и отклоняют кросс-доменные запросы (`403`).
-  Запросы без `Origin` (например `curl`) разрешены.
+- **Аутентификация:** cookie-сессии (`POST /auth/login`, по умолчанию
+  `admin` / `admin`). Все эндпоинты, кроме `/auth/*` и статики, требуют сессию
+  и отвечают `401` без неё. Устройство рассчитано на доверенную локальную сеть
+  (SoftAP или ваша собственная сеть Wi-Fi). **Не выставляйте устройство в
+  открытый интернет.**
+- **CSRF:** разрушающие эндпоинты `/system/*`, `/ext/power`, `/ext/reset`,
+  `/ota/check` и `/ota/update` проверяют заголовок `Origin` и отклоняют
+  кросс-доменные запросы (`403`). Запросы без `Origin` (например `curl`)
+  разрешены.
 
 ## Сводная таблица эндпоинтов
 
@@ -19,10 +22,16 @@ JSON, если не указано иное.
 | GET | `/` | 200 | Веб-интерфейс (SPA из SPIFFS) |
 | GET | `/config` | 200 | Текущая конфигурация |
 | POST | `/config` | 200 | Частичное обновление конфигурации |
+| GET | `/config/export` | 200 | Экспорт настроек в JSON-файл (attachment) |
 | GET | `/sensor` | 200 | Текущие показания датчиков |
 | POST | `/sensor` | 200 | Принять нагрузку датчика (отбрасывается) |
 | GET | `/sd/status` | 200 | Статус SD-карты |
 | POST | `/sd/write` | 200 | Записать тело запроса на SD-карту |
+| GET | `/sd/list?path=` | 200 | Содержимое каталога SD-карты |
+| GET | `/sd/download?path=` | 200 | Скачать файл с SD-карты |
+| GET | `/ota/status` | 200 | Состояние OTA и версии прошивки |
+| POST | `/ota/check` | 202 | Немедленная проверка манифеста |
+| POST | `/ota/update` | 202 | Скачать и установить обновление |
 | GET | `/logs` | 200 | Последние строки лога |
 | GET | `/wifi/scan` | 202 | Запустить асинхронное сканирование |
 | GET | `/wifi/scan/results` | 200 | Результаты сканирования |
@@ -43,10 +52,11 @@ JSON, если не указано иное.
 | Статус | Когда возвращается |
 |--------|--------------------|
 | `200 OK` | Успех |
-| `202 Accepted` | Асинхронная операция запущена (сканирование Wi-Fi) |
-| `400 Bad Request` | Некорректный JSON, недопустимые значения, пустое тело |
-| `403 Forbidden` | Кросс-доменный запрос к `/system/*`, `/ext/power` или `/ext/reset` |
-| `404 Not Found` | Ресурс не найден (статика; корень с `Accept: application/json`) |
+| `202 Accepted` | Асинхронная операция запущена (сканирование Wi-Fi, проверка/установка OTA) |
+| `400 Bad Request` | Некорректный JSON, недопустимые значения, пустое тело, path traversal |
+| `401 Unauthorized` | Нет действительной сессии |
+| `403 Forbidden` | Кросс-доменный запрос к защищённому POST-эндпоинту |
+| `404 Not Found` | Ресурс не найден (статика, файл/каталог SD, корень с `Accept: application/json`) |
 | `429 Too Many Requests` | Троттлинг сброса внешнего устройства (реже одного импульса в 2 с) |
 | `500 Internal Server Error` | Сбой ввода-вывода / сериализации |
 | `503 Service Unavailable` | Подсистема отключена (например SD или внешнее управление) либо SPIFFS не смонтирован |
@@ -69,12 +79,27 @@ JSON, если не указано иное.
 | `UART_INVALID` | Telnet-мост включён при выключенном UART |
 | `MQTT_INVALID` | MQTT включён без непустого URL брокера (≤255 символов) |
 | `EXT_INVALID` | `ext_rst_pulse_ms` вне диапазона 10–5000; `ext_pwr_pol` / `ext_rst_pol` не `0`/`1` |
+| `OTA_INVALID` | `ota_check_interval_min` вне диапазона 5–10080 или `ota_url` длиннее 255 символов |
 
 Помимо кодов, `POST /config` может вернуть `400` с текстовым `"error"`:
 `Invalid JSON`, `Failed to read request body`, `No valid configuration fields
 provided`, `Numeric value out of range`, `String too long (...)`.
 
 ---
+
+## Аутентификация
+
+Получите сессионную cookie и передавайте её во всех запросах:
+
+```bash
+curl -c cookies.txt -X POST http://192.168.4.1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin"}'
+curl -b cookies.txt http://192.168.4.1/config
+```
+
+Сессии хранятся в RAM и завершаются при перезагрузке. Запросы с IP-адресов
+самого устройства (on-boot self-test) считаются доверенными.
 
 ## `GET /config`
 
@@ -114,6 +139,9 @@ curl http://192.168.4.1/config
   "mqtt_enable": 0,
   "mqtt_broker_url": "",
   "mqtt_topic_prefix": "",
+  "ota_enable": 0,
+  "ota_url": "",
+  "ota_check_interval_min": 360,
   "ext_pwr_enable": 0,
   "ext_rst_enable": 0,
   "ext_rst_pulse_ms": 100,
@@ -181,8 +209,16 @@ curl -X POST http://192.168.4.1/config \
 {"error":"PIN_USB_CONFLICT: sdspi_miso GPIO12 reserved for USB Serial/JTAG console"}
 ```
 
+Пример: настроить OTA-сервер.
+
+```bash
+curl -X POST http://192.168.4.1/config \
+  -H 'Content-Type: application/json' \
+  -d '{"ota_enable":1,"ota_url":"http://192.168.1.10:8000","ota_check_interval_min":360}'
+```
+
 Правила длины строк: `wifi_ssid` ≤ 31, `wifi_password` ≤ 63, `server_url` ≤ 255,
-`mqtt_broker_url` ≤ 255, `mqtt_topic_prefix` ≤ 64.
+`mqtt_broker_url` ≤ 255, `mqtt_topic_prefix` ≤ 64, `ota_url` ≤ 255.
 
 ## `GET /sensor`
 
@@ -273,6 +309,144 @@ curl -X POST http://192.168.4.1/sd/write --data-binary 'hello'
 | `400` | `{"error":"Empty body"}` | Пустое тело запроса |
 | `500` | `{"error":"SD write failed"}` | Ошибка записи |
 | `503` | `{"error":"SD disabled"}` | SD отключена или не смонтирована |
+
+## `GET /sd/list`
+
+Содержимое одного каталога SD-карты. `path` — путь относительно корня карты
+(пусто или `/` — корень). Ответ — JSON-массив; каталоги идут первыми. Вывод
+ограничен 128 записями на каталог (в лог пишется предупреждение при усечении).
+
+```bash
+curl -b cookies.txt 'http://192.168.4.1/sd/list?path=logs'
+```
+
+```json
+[
+  {"name":"sht21.csv","path":"logs/sht21.csv","is_dir":false,"size":4096},
+  {"name":"archive","path":"logs/archive","is_dir":true,"size":0}
+]
+```
+
+| Статус | Причина |
+|--------|---------|
+| `200` | Список получен (пустой массив — каталог пуст) |
+| `400` | Некорректный путь (`..`, `\`, управляющие символы) |
+| `404` | Каталог не найден |
+| `503` | SD отключена или не смонтирована |
+
+## `GET /sd/download`
+
+Потоковое скачивание файла (chunked, `application/octet-stream`) с заголовком
+`Content-Disposition: attachment; filename="<имя>"`. Сессионная cookie
+отправляется браузером автоматически при переходе по ссылке.
+
+```bash
+curl -b cookies.txt -OJ 'http://192.168.4.1/sd/download?path=logs/sht21.csv'
+```
+
+| Статус | Причина |
+|--------|---------|
+| `200` | Файл отдаётся потоком |
+| `400` | Некорректный путь |
+| `404` | Файл не найден (в том числе если `path` указывает на каталог) |
+| `503` | SD отключена или не смонтирована |
+
+## `GET /config/export`
+
+Скачивает полный снимок настроек как файл `gateway-config.json`
+(`Content-Disposition: attachment`). Секреты (`wifi_password`, `sta_password`)
+не включаются — так же, как в `GET /config`. Часов реального времени на
+устройстве нет, поэтому `exported_at` — секунды с момента запуска.
+
+```bash
+curl -b cookies.txt -OJ http://192.168.4.1/config/export
+```
+
+```json
+{
+  "format": 1,
+  "firmware_version": "1.4.0",
+  "exported_at": 1234,
+  "config": { "baud_rate": 115200, "...": "..." }
+}
+```
+
+## OTA-обновление
+
+Обновления раздаются по обычному HTTP. Настройки: `ota_enable`, `ota_url`,
+`ota_check_interval_min` (см. `POST /config`). Периодическая проверка только
+сообщает о доступной версии; установка выполняется вручную через
+`POST /ota/update`.
+
+Сервер обновлений должен отдавать манифест `GET {ota_url}/version.json`:
+
+```json
+{"version":"1.4.1","filename":"gateway-1.4.1.bin","sha256":"<64 hex>"}
+```
+
+Обновление устанавливается, только если версия манифеста **строго больше**
+текущей. Перед записью образа проверяется SHA-256; при несовпадении слот не
+переключается. Для раздачи манифеста и образа используйте
+`tools/ota_server.py` (см. README).
+
+### `GET /ota/status`
+
+```bash
+curl -b cookies.txt http://192.168.4.1/ota/status
+```
+
+```json
+{
+  "enabled": true,
+  "url": "http://192.168.1.10:8000",
+  "check_interval_min": 360,
+  "current_version": "1.4.0",
+  "available_version": "1.4.1",
+  "last_check_s": 1234,
+  "last_result": "available",
+  "busy": false
+}
+```
+
+- `available_version` — `null`, если обновлений нет или проверка ещё не
+  выполнялась.
+- `last_check_s` — время последней попытки в секундах с момента запуска
+  (`0` — проверок не было).
+- `last_result` — `never`, `up_to_date`, `available`, `updating`, `error` или
+  `throttled` (проверки чаще одного раза в 5 секунд игнорируются).
+
+### `POST /ota/check`
+
+Запускает проверку манифеста в фоновой задаче. Требует `auth` и same-origin.
+
+```bash
+curl -b cookies.txt -X POST -H 'Content-Type: application/json' \
+     -d '{}' http://192.168.4.1/ota/check
+```
+
+| Статус | Тело |
+|--------|------|
+| `202` | `{"message":"OTA check started"}` |
+| `403` | cross-origin запрос |
+| `503` | `ota_url` не задан |
+
+### `POST /ota/update`
+
+Скачивает и устанавливает более новую версию, затем перезагружается. Ответ
+`202` приходит до завершения загрузки; прогресс и результат видны в
+`GET /ota/status` (`last_result`: `updating` → перезагрузка). При ошибке
+загрузки/SHA-256 текущая прошивка остаётся активной.
+
+```bash
+curl -b cookies.txt -X POST -H 'Content-Type: application/json' \
+     -d '{}' http://192.168.4.1/ota/update
+```
+
+| Статус | Тело |
+|--------|------|
+| `202` | `{"message":"Update started"}` |
+| `403` | cross-origin запрос |
+| `503` | `ota_url` не задан |
 
 ## `GET /logs`
 
@@ -428,8 +602,9 @@ curl -X POST http://192.168.4.1/system/reset
 
 ### CSRF-защита
 
-`/system/reboot`, `/system/reset`, `/ext/power` и `/ext/reset` сравнивают хост из
-заголовка `Origin` с заголовком `Host`. При несовпадении возвращается `403`:
+`/system/reboot`, `/system/reset`, `/ext/power`, `/ext/reset`, `/ota/check` и
+`/ota/update` сравнивают хост из заголовка `Origin` с заголовком `Host`. При
+несовпадении возвращается `403`:
 
 ```json
 {"error":"Cross-origin request rejected"}
@@ -535,7 +710,8 @@ curl -X POST http://192.168.4.1/ext/reset
 
 ## Заметки о таймаутах и сокетах
 
-- HTTP-сервер: 7 сокетов, backlog 16, recv/send таймауты 10 с.
+- HTTP-сервер: 10 сокетов, backlog 16, recv/send таймауты 10 с. Пул сокетов
+  LwIP поднят до 20 (HTTP + telnet + MQTT + OTA/SD-скачивание).
 - Тело запроса `/config` ограничено 4096 байтами; превышение обрезается.
 - При перезагрузке/сбросе перед `esp_restart()` выдерживается задержка 300 мс,
   чтобы ответ успел уйти клиенту.

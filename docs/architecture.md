@@ -93,9 +93,13 @@ SHT21, INA219 и INA226. Если датчик отсутствует или ш�
 
 ### SD-карта (`sd_handler.[ch]`)
 SD по SPI (`SPI2_HOST`), FatFs, точка монтирования `/sdcard`. Форматирование при
-неудаче монтирования включено. `sd_write_rotate()` ограничивает файлы 1 МБ и
-хранит до 10 ротированных копий, удаляя назначение перед переименованием
-(обход поведения FatFs `f_rename`, возвращающего `EEXIST`).
+неудаче монтирования включено (`max_files = 8`). `sd_write_rotate()` ограничивает
+файлы 1 МБ и хранит до 10 ротированных копий, удаляя назначение перед
+переименованием (обход поведения FatFs `f_rename`, возвращающего `EEXIST`).
+`sd_list_dir()` обходит один уровень каталога через `opendir/readdir` (два
+прохода: сначала каталоги, затем файлы) и возвращает JSON-массив;
+`sd_open_file()` отдаёт `FILE*` для потокового скачивания. Оба помощника
+отклоняют `..`, `\` и управляющие символы и работают относительно `/sdcard`.
 
 ### Wi-Fi (`wifi_ap.[ch]`, `wifi_scan.[ch]`)
 Радио работает в режиме AP+STA. SoftAP всегда включён (SSID по умолчанию
@@ -105,9 +109,10 @@ SD по SPI (`SPI2_HOST`), FatFs, точка монтирования `/sdcard`.
 отдельно от AP.
 
 ### HTTP-сервер (`http_server.c`)
-Порт 80, `ctrl_port` 32768, 7 сокетов, 18 URI-обработчиков (лимит
-`max_uri_handlers` = 20), backlog 16, wildcard-сопоставление URI, стек задачи
-8 КБ, приоритет `tskIDLE_PRIORITY+5`. Точные REST-маршруты регистрируются
+Порт 80, `ctrl_port` 32768, `max_open_sockets` 10, 28 URI-обработчиков (лимит
+`max_uri_handlers` = 32), backlog 16, wildcard-сопоставление URI, стек задачи
+8 КБ, приоритет `tskIDLE_PRIORITY+5`. Пул сокетов LwIP — 20
+(`CONFIG_LWIP_MAX_SOCKETS`). Точные REST-маршруты регистрируются
 раньше catch-all `/*`, поэтому они выигрывают сопоставление. Настройки ответов —
 8 заголовков, recv/send таймауты 10 с.
 
@@ -132,6 +137,27 @@ Path traversal (`..`) отклоняется с `400`.
 (C11 `_Atomic`), публикуется только после успешного запуска. Одна JSON-полезная
 нагрузка на датчик, QoS 0.
 
+### OTA (`ota_handler.[ch]`)
+Фоновая задача (`ota`, стек 8192, приоритет 4) выполняет проверки и установку;
+ручные команды приходят через `xTaskNotify` из `/ota/check` и `/ota/update`.
+Манифест `{ota_url}/version.json` разбирается cJSON, версии сравниваются
+встроенным `semver_parse`/`semver_cmp` (строго 3 компонента). Периодические
+проверки идут только при `ota_enable` + непустом `ota_url`, с интервалом
+`ota_check_interval_min`; ручные проверки троттлятся до одной в 5 с.
+
+Установка: `esp_http_client` → `esp_ota_begin(OTA_WITH_SEQUENTIAL_WRITES)` →
+`esp_ota_write` + инкрементальный SHA-256 (PSA Crypto, `psa_hash_*`) →
+сверка с манифестом → `esp_ota_end` → `esp_ota_set_boot_partition` →
+`esp_restart`. При любой ошибке вызывается `esp_ota_abort`, текущий слот
+остаётся активным. Целевой раздел — `esp_ota_get_next_update_partition()`
+(чередование `factory` ↔ `ota_0`).
+
+Rollback: `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` — новый образ стартует как
+`PENDING_VERIFY`; `self_test.c` подтверждает его
+(`esp_ota_mark_app_valid_cancel_rollback`) только после полностью успешного
+набора HTTP-проверок. Если прошивка не подтвердилась, следующая перезагрузка
+возвращает предыдущий слот. Запуск из `factory` ничего не подтверждает.
+
 ## Порядок инициализации
 
 `app_main()` инициализирует подсистемы строго по порядку (важно для зависимостей):
@@ -151,10 +177,12 @@ Path traversal (`..`) отклоняется с `400`.
 9. **Wi-Fi AP** (`wifi_init`) — базовая инфраструктура
 10. **Wi-Fi STA** (`init_wifi_sta`) — восстановление сохранённой сети
 11. **MQTT** (`init_mqtt`) — после появления сетевого стека
-12. **Telnet-мосты** (`init_telnet_bridge0/1`) — если включены и доступен их UART
-13. **SPIFFS** (`init_spiffs`) — веб-ресурсы до старта HTTP
-14. **HTTP-сервер** (`init_http_server`)
-15. **Self-test** (`start_self_test`)
+12. **OTA** (`init_ota`) — фоновая задача; периодические проверки только при
+    `ota_enable` и заданном `ota_url`
+13. **Telnet-мосты** (`init_telnet_bridge0/1`) — если включены и доступен их UART
+14. **SPIFFS** (`init_spiffs`) — веб-ресурсы до старта HTTP
+15. **HTTP-сервер** (`init_http_server`)
+16. **Self-test** (`start_self_test`) — при успехе подтверждает OTA-образ
 
 После инициализации задача `app_main` остаётся живой в цикле задержки.
 
@@ -168,12 +196,15 @@ Path traversal (`..`) отклоняется с `400`.
 | `httpd` (HTTP-сервер) | `http_server.c` | 8192 | `tskIDLE_PRIORITY+5` |
 | `sensor_log` | `sensor_handler.c` | 4096 | 5 |
 | `telnet_bridge0/1` | `telnet_bridge.c` | 4096 | 5 |
+| `ota` | `ota_handler.c` | 8192 | 4 |
 | `self_test` | `self_test.c` | 8192 | 5 |
 
 Периоды и таймауты:
 
 - `sensor_log` — раз в 10 с (`SENSOR_LOG_INTERVAL_MS`).
 - `self_test` — стартует через 3 с после загрузки; HTTP-запросы с таймаутом 5 с.
+- `ota` — периодическая проверка раз в `ota_check_interval_min`; ручные
+  проверки не чаще одной в 5 с.
 - Теlnet — буфер 256 байт, retry привязки 5 с, пауза между клиентами 500 мс,
   `SO_SNDTIMEO` 5 с.
 - I2C-транзакции — таймаут 100 мс (SHT21 hold-master до ~85 мс).
@@ -190,8 +221,15 @@ Path traversal (`..`) отклоняется с `400`.
 | `nvs` | data/nvs | 0x9000 | 0x6000 (24 КБ) | Конфигурация |
 | `otadata` | data/ota | 0xF000 | 0x2000 (8 КБ) | Данные OTA |
 | `phy_init` | data/phy | 0x11000 | 0x1000 (4 КБ) | Калибровка PHY |
-| `factory` | app/factory | 0x20000 | 0x280000 (2.5 МБ) | Приложение |
-| `spiffs` | data/spiffs | 0x2A0000 | 0x160000 (~1.375 МБ) | Веб-ресурсы (`web/`) |
+| `factory` | app/factory | 0x20000 | 0x1A0000 (1.625 МБ) | Recovery / чередующийся OTA-слот |
+| `ota_0` | app/ota_0 | 0x1C0000 | 0x1A0000 (1.625 МБ) | OTA-слот |
+| `spiffs` | data/spiffs | 0x360000 | 0xA0000 (640 КБ) | Веб-ресурсы (`web/`) |
+
+A/B-схема: `esp_ota_get_next_update_partition()` чередует `factory` и `ota_0`.
+`nvs` и `otadata` остались на прежних смещениях, поэтому переход со старой
+таблицы (2.5 МБ factory + 1.375 МБ SPIFFS) через обычный `idf.py flash`
+сохраняет настройки. `idf.py flash` также пишет `ota_data_initial.bin`, поэтому
+после прошивки загружается `factory`.
 
 Образ SPIFFS собирается из каталога `web/` на этапе сборки
 (`spiffs_create_partition_image(spiffs web/ FLASH_IN_PROJECT)`) и прошивается
@@ -200,8 +238,8 @@ Path traversal (`..`) отклоняется с `400`.
 ## Управление памятью
 
 - **Строки конфигурации** (`wifi_ssid`, `wifi_password`, `server_url`, MQTT URL
-  и префикс) выделяются через `malloc`/`strdup` и освобождаются в `set_config`
-  и перед повторной загрузкой в `load_config`.
+  и префикс, `ota_url`) выделяются через `malloc`/`strdup` и освобождаются в
+  `set_config` и перед повторной загрузкой в `load_config`.
 - **HTTP-обработчики** читают тело запроса в стековые буферы (4096 байт для
   `/config`, 512 — для `/sd/write` и `/sensor`, 256 — для `/wifi/connect`) и
   используют cJSON для разбора; JSON-строки освобождаются после отправки.

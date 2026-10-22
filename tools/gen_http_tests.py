@@ -7,6 +7,10 @@ using the `self_test_case_t` type declared immediately before its inclusion.
 
 CSV format (lines starting with '#' and blank lines are ignored):
     METHOD,PATH,EXPECTED_STATUS
+
+EXPECTED_STATUS may contain alternatives separated by '|' for endpoints whose
+response depends on the saved configuration; the generated row carries the
+first code plus an optional alternate (0 = none).
 """
 import csv
 import os
@@ -33,15 +37,20 @@ def main() -> int:
                 continue
             method = first
             path = row[1].strip()
-            expected = row[2].strip()
-            rows.append((method, path, expected))
+            codes = [c.strip() for c in row[2].split("|") if c.strip()]
+            if not codes:
+                print(f"skipping row without expected status: {row}", file=sys.stderr)
+                continue
+            expected = int(codes[0])
+            alternate = int(codes[1]) if len(codes) > 1 else 0
+            rows.append((method, path, expected, alternate))
 
     lines = [
         f"/* Auto-generated from {os.path.basename(csv_path)} - do not edit. */",
         "static const self_test_case_t s_tests[] = {",
     ]
-    for method, path, expected in rows:
-        lines.append(f'    {{"{method}", "{path}", {expected}}},')
+    for method, path, expected, alternate in rows:
+        lines.append(f'    {{"{method}", "{path}", {expected}, {alternate}}},')
     lines.append("};")
     lines.append("")
 

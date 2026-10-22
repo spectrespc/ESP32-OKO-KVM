@@ -3,6 +3,8 @@
 #include "pins.h"
 #include "pin_validation.h"
 #include "esp_log.h"
+#include "esp_app_desc.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "cJSON.h"
@@ -74,6 +76,15 @@ static void set_ext_defaults(void)
     app_config.ext_pwr_state    = 0;
 }
 
+// Same for the OTA scalars: the interval must never be 0, otherwise a later
+// POST /config validation would fail on a default-constructed candidate.
+static void set_ota_defaults(void)
+{
+    app_config.ota_enable = 0;
+    app_config.ota_url = NULL;
+    app_config.ota_check_interval_min = OTA_CHECK_INTERVAL_MIN_DEFAULT;
+}
+
 void init_config(void)
 {
     // Note: nvs_flash_init() is called in main.c already
@@ -84,6 +95,7 @@ void init_config(void)
         ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
         set_pin_defaults(&app_config.pins);
         set_ext_defaults();
+        set_ota_defaults();
         return;
     }
 
@@ -96,7 +108,8 @@ app_config_t* get_config(void)
     return &app_config;
 }
 
-char* get_config_json(void)
+// Builds the GET /config object (also embedded in the export wrapper).
+static cJSON* build_config_object(void)
 {
     cJSON* root = cJSON_CreateObject();
     if (!root) {
@@ -134,6 +147,10 @@ char* get_config_json(void)
                             app_config.mqtt_broker_url ? app_config.mqtt_broker_url : "");
     cJSON_AddStringToObject(root, "mqtt_topic_prefix",
                             app_config.mqtt_topic_prefix ? app_config.mqtt_topic_prefix : "");
+    cJSON_AddNumberToObject(root, "ota_enable", app_config.ota_enable);
+    cJSON_AddStringToObject(root, "ota_url",
+                            app_config.ota_url ? app_config.ota_url : "");
+    cJSON_AddNumberToObject(root, "ota_check_interval_min", app_config.ota_check_interval_min);
     cJSON_AddNumberToObject(root, "ext_pwr_enable", app_config.ext_pwr_enable);
     cJSON_AddNumberToObject(root, "ext_rst_enable", app_config.ext_rst_enable);
     cJSON_AddNumberToObject(root, "ext_rst_pulse_ms", app_config.ext_rst_pulse_ms);
@@ -162,6 +179,40 @@ char* get_config_json(void)
         cJSON_AddItemToObject(root, "pins", pins);
     }
 
+    return root;
+}
+
+char* get_config_json(void)
+{
+    cJSON* root = build_config_object();
+    if (!root) {
+        return NULL;
+    }
+    char* out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return out;
+}
+
+char* get_config_export_json(void)
+{
+    const esp_app_desc_t* desc = esp_app_get_description();
+    cJSON* config = build_config_object();
+    if (!config) {
+        return NULL;
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        cJSON_Delete(config);
+        return NULL;
+    }
+    cJSON_AddNumberToObject(root, "format", 1);
+    cJSON_AddStringToObject(root, "firmware_version", desc ? desc->version : "");
+    // No RTC/SNTP on this device: report seconds since boot instead.
+    cJSON_AddNumberToObject(root, "exported_at",
+                            (double)(esp_timer_get_time() / 1000000));
+    cJSON_AddItemToObject(root, "config", config);
+
     char* out = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     return out;
@@ -182,12 +233,14 @@ void set_config(app_config_t* config)
     char* url = config->server_url ? strdup(config->server_url) : NULL;
     char* mqtt_url = config->mqtt_broker_url ? strdup(config->mqtt_broker_url) : NULL;
     char* mqtt_topic = config->mqtt_topic_prefix ? strdup(config->mqtt_topic_prefix) : NULL;
+    char* ota_url = config->ota_url ? strdup(config->ota_url) : NULL;
 
     free(app_config.wifi_ssid);
     free(app_config.wifi_password);
     free(app_config.server_url);
     free(app_config.mqtt_broker_url);
     free(app_config.mqtt_topic_prefix);
+    free(app_config.ota_url);
 
     app_config = *config;
     app_config.wifi_ssid = ssid;
@@ -195,6 +248,7 @@ void set_config(app_config_t* config)
     app_config.server_url = url;
     app_config.mqtt_broker_url = mqtt_url;
     app_config.mqtt_topic_prefix = mqtt_topic;
+    app_config.ota_url = ota_url;
 
     save_config();
 }
@@ -325,6 +379,24 @@ bool config_validate_and_set(app_config_t* candidate, char* err_buf, size_t err_
     if (candidate->ext_rst_pol > 1) {
         if (err_buf && err_buf_len) {
             snprintf(err_buf, err_buf_len, "EXT_INVALID: ext_rst_pol must be 0 or 1");
+        }
+        return false;
+    }
+
+    // OTA: the periodic check interval is bounded, and the base URL is bounded
+    // by the same NVS string limit as the other URL fields.
+    if (candidate->ota_check_interval_min < OTA_CHECK_INTERVAL_MIN ||
+        candidate->ota_check_interval_min > OTA_CHECK_INTERVAL_MAX) {
+        if (err_buf && err_buf_len) {
+            snprintf(err_buf, err_buf_len,
+                     "OTA_INVALID: ota_check_interval_min must be %d-%d",
+                     OTA_CHECK_INTERVAL_MIN, OTA_CHECK_INTERVAL_MAX);
+        }
+        return false;
+    }
+    if (candidate->ota_url && strlen(candidate->ota_url) > 255) {
+        if (err_buf && err_buf_len) {
+            snprintf(err_buf, err_buf_len, "OTA_INVALID: ota_url must be <=255 characters");
         }
         return false;
     }
@@ -468,6 +540,19 @@ void save_config(void)
         }
     }
 
+    // OTA updates.
+    save_u8(s_nvs_handle, "ota_enable", app_config.ota_enable);
+    err = nvs_set_u32(s_nvs_handle, "ota_check_min", app_config.ota_check_interval_min);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save ota_check_min: %s", esp_err_to_name(err));
+    }
+    if (app_config.ota_url) {
+        err = nvs_set_str(s_nvs_handle, "ota_url", app_config.ota_url);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to save ota_url: %s", esp_err_to_name(err));
+        }
+    }
+
     err = nvs_commit(s_nvs_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit NVS: %s", esp_err_to_name(err));
@@ -481,6 +566,7 @@ void load_config(void)
     if (!s_nvs_handle) {
         set_pin_defaults(&app_config.pins);
         set_ext_defaults();
+        set_ota_defaults();
         return;
     }
 
@@ -491,6 +577,7 @@ void load_config(void)
     free(app_config.server_url);        app_config.server_url = NULL;
     free(app_config.mqtt_broker_url);   app_config.mqtt_broker_url = NULL;
     free(app_config.mqtt_topic_prefix); app_config.mqtt_topic_prefix = NULL;
+    free(app_config.ota_url);           app_config.ota_url = NULL;
 
     // Load configuration values
     esp_err_t err = nvs_get_u32(s_nvs_handle, "baud_rate", &app_config.baud_rate);
@@ -619,6 +706,17 @@ void load_config(void)
         app_config.mqtt_enable = 0;
     }
 
+    // OTA updates: off by default; an out-of-range interval falls back to the
+    // default so a stale/corrupt value cannot disable periodic checks forever.
+    if (nvs_get_u8(s_nvs_handle, "ota_enable", &app_config.ota_enable) != ESP_OK) {
+        app_config.ota_enable = 0;
+    }
+    if (nvs_get_u32(s_nvs_handle, "ota_check_min", &app_config.ota_check_interval_min) != ESP_OK ||
+        app_config.ota_check_interval_min < OTA_CHECK_INTERVAL_MIN ||
+        app_config.ota_check_interval_min > OTA_CHECK_INTERVAL_MAX) {
+        app_config.ota_check_interval_min = OTA_CHECK_INTERVAL_MIN_DEFAULT;
+    }
+
     // I2C bus and sensors: bus off and no sensors by default; INA addresses
     // default to 0x40.
     if (nvs_get_u8(s_nvs_handle, "i2c_en", &app_config.i2c_enable) != ESP_OK) {
@@ -745,6 +843,17 @@ void load_config(void)
         }
     } else {
         app_config.mqtt_topic_prefix = NULL;
+    }
+
+    size_t ota_url_len = 0;
+    err = nvs_get_str(s_nvs_handle, "ota_url", NULL, &ota_url_len);
+    if (err == ESP_OK && ota_url_len > 0) {
+        app_config.ota_url = malloc(ota_url_len);
+        if (app_config.ota_url) {
+            nvs_get_str(s_nvs_handle, "ota_url", app_config.ota_url, &ota_url_len);
+        }
+    } else {
+        app_config.ota_url = NULL;
     }
 
     config_loaded = true;

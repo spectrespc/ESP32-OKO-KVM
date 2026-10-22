@@ -1,12 +1,14 @@
 # HTTP endpoint expectations, shared by the on-device self-test
 # (via tools/gen_http_tests.py) and build_and_flash.sh (test command).
 # Format: METHOD,PATH,EXPECTED_STATUS
+# EXPECTED_STATUS may list alternatives separated by '|' for endpoints whose
+# response depends on the saved configuration (e.g. SD card enabled or not).
 GET,/config,200
 POST,/config,400
 GET,/sensor,200
 POST,/sensor,200
-GET,/sd/status,503
-POST,/sd/write,503
+GET,/sd/status,200|503
+POST,/sd/write,200|503
 GET,/logs,200
 GET,/wifi/status,200
 GET,/wifi/scan,202
@@ -15,5 +17,9 @@ POST,/wifi/connect,400
 GET,/,200
 POST,/system/reboot,200
 GET,/ext/status,200
-POST,/ext/power,503
+POST,/ext/power,400|503
 POST,/ext/reset,503
+GET,/ota/status,200
+GET,/sd/list,200|503
+GET,/sd/download,404|503
+GET,/config/export,200

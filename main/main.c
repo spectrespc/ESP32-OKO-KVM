@@ -23,6 +23,7 @@
 #include "ext_control.h"
 #include "status_led.h"
 #include "auth_handler.h"
+#include "ota_handler.h"
 
 static const char* TAG = "main";
 
@@ -97,6 +98,9 @@ void app_main(void)
 
     // Start MQTT publishing once the network stack is available.
     init_mqtt();
+
+    // Start the OTA worker (periodic checks only when enabled + URL set).
+    init_ota();
 
     // Start the telnet bridges when enabled and their UART is available.
     if (cfg->telnet0_enable) {

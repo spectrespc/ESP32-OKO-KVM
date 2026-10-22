@@ -3,6 +3,8 @@
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_netif.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdbool.h>
@@ -15,6 +17,9 @@ typedef struct {
     const char* method;
     const char* path;
     int expected_status;
+    // Optional second accepted status (0 = none) for endpoints whose result
+    // depends on the saved configuration.
+    int alternate_status;
 } self_test_case_t;
 
 // Expected responses come from tests/http_endpoints.csv via the generated
@@ -49,6 +54,28 @@ static int http_request(const char* base, const char* method, const char* path)
     int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : -1;
     esp_http_client_cleanup(client);
     return status;
+}
+
+static bool running_from_ota_slot(void)
+{
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    return running && running->subtype != ESP_PARTITION_SUBTYPE_APP_FACTORY;
+}
+
+// Confirms a freshly installed OTA image after the endpoint self-test passed.
+// Skipped when the device booted from the factory slot (nothing to confirm) or
+// when rollback support is disabled.
+static void confirm_ota_image(void)
+{
+    if (!running_from_ota_slot()) {
+        return;
+    }
+    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "OTA image confirmed; rollback cancelled");
+    } else {
+        ESP_LOGW(TAG, "Could not confirm OTA image: %s", esp_err_to_name(err));
+    }
 }
 
 static void self_test_task(void* arg)
@@ -91,10 +118,18 @@ static void self_test_task(void* arg)
             continue;
         }
         int code = http_request(base, s_tests[i].method, s_tests[i].path);
-        if (code == s_tests[i].expected_status) {
+        bool ok = (code == s_tests[i].expected_status) ||
+                  (s_tests[i].alternate_status != 0 &&
+                   code == s_tests[i].alternate_status);
+        if (ok) {
             ESP_LOGI(TAG, "SELF-TEST PASS %s %s -> %d",
                      s_tests[i].method, s_tests[i].path, code);
             pass++;
+        } else if (s_tests[i].alternate_status != 0) {
+            ESP_LOGE(TAG, "SELF-TEST FAIL %s %s -> %d (expected %d or %d)",
+                     s_tests[i].method, s_tests[i].path, code,
+                     s_tests[i].expected_status, s_tests[i].alternate_status);
+            fail++;
         } else {
             ESP_LOGE(TAG, "SELF-TEST FAIL %s %s -> %d (expected %d)",
                      s_tests[i].method, s_tests[i].path, code, s_tests[i].expected_status);
@@ -102,6 +137,15 @@ static void self_test_task(void* arg)
         }
     }
     ESP_LOGI(TAG, "==== HTTP self-test summary: %d passed, %d failed ====", pass, fail);
+
+    // The bootloader only commits a new OTA slot once the app confirms it. Do
+    // that after a fully passing endpoint check; otherwise leave the image
+    // pending so the next reboot rolls back to the previous slot.
+    if (fail == 0) {
+        confirm_ota_image();
+    } else if (running_from_ota_slot()) {
+        ESP_LOGE(TAG, "Self-test failed; OTA image left unconfirmed (rollback on reboot)");
+    }
 
     vTaskDelete(NULL);
 }

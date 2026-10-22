@@ -153,6 +153,9 @@ select.gpio option.boot{color:var(--warn)}
 #login-error{margin:12px 0 0;color:var(--err);font-size:13px;text-align:center}
 .account-current{display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding-bottom:14px;margin-bottom:16px;border-bottom:1px dashed var(--line)}
+.file-link{color:var(--text);text-decoration:none;font-weight:600}
+.file-link:hover{color:var(--accent)}
+a.btn{text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
 </style>
 </head>
 <body>
@@ -166,6 +169,8 @@ select.gpio option.boot{color:var(--warn)}
       <button data-page="wifi">WiFi</button>
       <button data-page="sensors">Sensors</button>
       <button data-page="sd">SD Card</button>
+      <button data-page="files">Files</button>
+      <button data-page="update">Update</button>
       <button data-page="external">External</button>
       <button data-page="logs">System Log</button>
       <button data-page="account">Account</button>
@@ -367,6 +372,8 @@ const routes = {
   wifi:      renderWifi,
   sensors:   renderSensors,
   sd:        renderSD,
+  files:     renderFiles,
+  update:    renderUpdate,
   external:  renderExternal,
   logs:      renderLogs,
   account:   renderAccount,
@@ -729,6 +736,23 @@ async function renderConfig(){
         <p class="muted" style="margin:8px 0 0">TLS: use mqtts:// in the URL (mqtts://broker:8883).</p>
       </div>
       <div class="card section" style="margin-top:16px">
+        <h3>Firmware update (OTA)</h3>
+        <div class="toggle">
+          <span>Periodic update checks</span>
+          <label class="switch"><input type="checkbox" id="cfg_ota_enable" ${cfg.ota_enable ? "checked":""}><span class="slider"></span></label>
+        </div>
+        <div class="field"><label>Update server URL</label>
+          <input type="text" id="cfg_ota_url" value="${escapeHtml(cfg.ota_url || "")}"
+                 placeholder="http://192.168.1.10:8000"></div>
+        <div class="field"><label>Check interval (minutes, 5-10080)</label>
+          <input type="number" min="5" max="10080" id="cfg_ota_check_interval_min"
+                 value="${cfg.ota_check_interval_min || 360}"></div>
+        <p class="muted" style="margin:8px 0 0">The server must expose
+          <code>version.json</code> and the firmware image (see
+          <code>tools/ota_server.py</code>). Updates are installed only on request
+          from the Update tab. A changed interval takes effect after reboot.</p>
+      </div>
+      <div class="card section" style="margin-top:16px">
         <h3>I2C sensors</h3>
         ${i2cHtml}
         <p class="muted" style="margin:10px 0 0">Addresses accept hex 0x40-0x4F. Enable only one INA device; SHT21 is fixed at 0x40.</p>
@@ -742,12 +766,21 @@ async function renderConfig(){
         <table><thead><tr><th>Function</th><th>Pin</th><th>Key</th></tr></thead>
         <tbody>${pinHtml}</tbody></table>
       </div>
-      <button class="btn" type="submit">Save configuration</button>
+      <div class="row" style="margin-top:6px">
+        <button class="btn" type="submit">Save configuration</button>
+        <button class="btn ghost" type="button" id="cfg-export">Export settings</button>
+      </div>
     </form>`;
 
   document.querySelectorAll("select.gpio").forEach(s =>
     s.addEventListener("change", refreshPinOptions));
   refreshPinOptions();
+
+  $("#cfg-export").addEventListener("click", () => {
+    // Content-Disposition: attachment, so the browser downloads without
+    // navigating away. The session cookie is sent same-origin.
+    location.href = "/config/export";
+  });
 
   $("#cfg-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -795,6 +828,14 @@ async function renderConfig(){
     payload.server_url = $("#cfg_server_url").value;
     payload.mqtt_broker_url = $("#cfg_mqtt_broker_url").value;
     payload.mqtt_topic_prefix = $("#cfg_mqtt_topic_prefix").value;
+    payload.ota_enable = $("#cfg_ota_enable").checked ? 1 : 0;
+    payload.ota_url = $("#cfg_ota_url").value;
+    const otaInterval = parseInt($("#cfg_ota_check_interval_min").value, 10);
+    if (isNaN(otaInterval) || otaInterval < 5 || otaInterval > 10080){
+      toast("OTA check interval must be 5-10080 minutes.", "err");
+      return;
+    }
+    payload.ota_check_interval_min = otaInterval;
     const pw = $("#cfg_wifi_password").value;
     if (pw) payload.wifi_password = pw;
     PIN_FIELDS.forEach(([key]) => payload.pins[key] = parseInt($("#pin_"+key).value, 10) || 0);
@@ -1027,6 +1068,213 @@ function renderSD(){
       setConn(true);
     }catch(err){ setConn(false); toast("Write failed: " + err, "err"); }
     refresh();
+  });
+
+  poll(refresh, 3000);
+}
+
+/* ================================================================= FILES */
+function formatBytes(n){
+  if (n === undefined || n === null) return "—";
+  if (n < 1024) return n + " B";
+  const units = ["KB", "MB", "GB"];
+  let value = n, i = -1;
+  do { value /= 1024; i++; } while (value >= 1024 && i < units.length - 1);
+  return value.toFixed(value >= 10 ? 0 : 1) + " " + units[i];
+}
+
+function renderFiles(){
+  let current = "";
+  pageEl.innerHTML = `<h2>Files</h2>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div id="files-path" class="muted">/</div>
+        <div class="row" style="flex:0 0 auto">
+          <button class="btn ghost" id="files-up">Up</button>
+          <button class="btn ghost" id="files-refresh">Refresh</button>
+        </div>
+      </div>
+      <div id="files-list" style="margin-top:14px">${spinnerCard("loading…")}</div>
+      <p class="muted" style="margin:12px 0 0">Read-only view of the SD card. Files are downloaded through
+        <code>GET /sd/download</code> using the current session cookie.</p>
+    </div>`;
+
+  async function load(path){
+    current = path || "";
+    const pathEl = $("#files-path");
+    if (pathEl) pathEl.textContent = "/" + current;
+    const box = $("#files-list");
+    if (!box) return;
+    box.innerHTML = spinnerCard("loading…");
+
+    const r = await fetchJSON("GET", "/sd/list?path=" + encodeURIComponent(current));
+    if (!r.ok){
+      const msg = (r.data && r.data.error) || ("HTTP " + r.status);
+      box.innerHTML = `<div class="empty">${escapeHtml(msg)}</div>`;
+      return;
+    }
+    const entries = Array.isArray(r.data) ? r.data : [];
+    if (!entries.length){
+      box.innerHTML = `<div class="empty">Directory is empty.</div>`;
+      return;
+    }
+
+    box.innerHTML = `<table><thead><tr><th>Name</th><th>Type</th><th>Size</th><th></th></tr></thead><tbody>` +
+      entries.map(e => {
+        const name = escapeHtml(e.name);
+        const href = "/sd/download?path=" + encodeURIComponent(e.path);
+        const label = e.is_dir
+          ? `<a href="#" class="file-link dir-link" data-path="${escapeHtml(e.path)}">${name}</a>`
+          : name;
+        const action = e.is_dir
+          ? `<a href="#" class="file-link dir-link" data-path="${escapeHtml(e.path)}">Open</a>`
+          : `<a href="${href}" class="file-link" download="${name}">Download</a>`;
+        return `<tr><td>${label}</td><td class="muted">${e.is_dir ? "DIR" : "file"}</td>` +
+               `<td class="muted">${e.is_dir ? "—" : formatBytes(e.size)}</td>` +
+               `<td style="text-align:right">${action}</td></tr>`;
+      }).join("") + `</tbody></table>`;
+
+    box.querySelectorAll(".dir-link").forEach(a =>
+      a.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        load(a.dataset.path);
+      }));
+  }
+
+  $("#files-up").addEventListener("click", () => {
+    if (!current) return;
+    const idx = current.lastIndexOf("/");
+    load(idx < 0 ? "" : current.slice(0, idx));
+  });
+  $("#files-refresh").addEventListener("click", () => load(current));
+  load("");
+}
+
+/* ================================================================ UPDATE */
+function renderUpdate(){
+  let formFilled = false;
+
+  pageEl.innerHTML = `<h2>Firmware update</h2>
+    <div class="grid cols-2 section">
+      <div class="card">
+        <h3>Status</h3>
+        <div id="upd-status">${spinnerCard("checking…")}</div>
+        <div class="row" style="margin-top:14px">
+          <button class="btn" id="upd-check">Check now</button>
+          <button class="btn ghost" id="upd-install" disabled>Install update</button>
+        </div>
+        <p class="muted" style="margin:12px 0 0">Updates are installed only when you press
+          Install. The device verifies the image SHA-256 and restarts into the new
+          slot; a failed boot rolls back to the previous firmware.</p>
+      </div>
+      <div class="card">
+        <h3>OTA settings</h3>
+        <div class="toggle">
+          <span>Periodic update checks</span>
+          <label class="switch"><input type="checkbox" id="upd_ota_enable"><span class="slider"></span></label>
+        </div>
+        <div class="field"><label>Update server URL</label>
+          <input type="text" id="upd_ota_url" placeholder="http://192.168.1.10:8000"></div>
+        <div class="field"><label>Check interval (minutes, 5-10080)</label>
+          <input type="number" min="5" max="10080" id="upd_ota_check_interval_min" value="360"></div>
+        <button class="btn" id="upd-save">Save OTA settings</button>
+        <p class="muted" style="margin:12px 0 0">Periodic checks only report an available
+          version. A changed interval takes effect after reboot.</p>
+      </div>
+    </div>`;
+
+  const RESULT_BADGES = {
+    never:      () => badge("never checked", "off"),
+    available:  () => badge("update available", "warn"),
+    up_to_date: () => badge("up to date", "ok"),
+    updating:   () => badge("installing…", "warn"),
+    throttled:  () => badge("throttled", "off"),
+    error:      () => badge("error", "err"),
+  };
+
+  function renderStatus(s){
+    const box = $("#upd-status");
+    if (!box) return;
+    const result = s.last_result || "never";
+    const resultBadge = (RESULT_BADGES[result] || (() => badge(result, "off")))();
+    box.innerHTML = `
+      <div class="status-row"><span>Current version</span><span><b>${escapeHtml(s.current_version || "—")}</b></span></div>
+      <div class="status-row"><span>Available version</span><span>${escapeHtml(s.available_version || "—")}</span></div>
+      <div class="status-row"><span>Last result</span>${resultBadge}</div>
+      <div class="status-row"><span>Last check</span><span class="muted">${s.last_check_s ? ("at " + s.last_check_s + " s uptime") : "never"}</span></div>
+      <div class="status-row"><span>Periodic checks</span>${s.enabled ? badge("enabled","ok") : badge("disabled","off")}</div>
+      <div class="status-row"><span>Server</span><span class="muted">${escapeHtml(s.url || "—")}</span></div>`;
+
+    const checkBtn = $("#upd-check");
+    const installBtn = $("#upd-install");
+    if (checkBtn) checkBtn.disabled = !!s.busy;
+    if (installBtn) installBtn.disabled = !!s.busy || !s.available_version;
+  }
+
+  async function refresh(){
+    const r = await fetchJSON("GET", "/ota/status");
+    const box = $("#upd-status");
+    if (!box) return;
+    if (!r.ok){
+      box.innerHTML = `<div class="empty">OTA status unavailable (HTTP ${r.status}).</div>`;
+      return;
+    }
+    const s = r.data || {};
+    renderStatus(s);
+    if (!formFilled){
+      const en = $("#upd_ota_enable");
+      const url = $("#upd_ota_url");
+      const interval = $("#upd_ota_check_interval_min");
+      if (en) en.checked = !!s.enabled;
+      if (url) url.value = s.url || "";
+      if (interval) interval.value = s.check_interval_min || 360;
+      formFilled = true;
+    }
+  }
+
+  $("#upd-check").addEventListener("click", async () => {
+    const res = await fetchJSON("POST", "/ota/check", {});
+    if (res.ok){
+      toast("Checking for updates…", "ok");
+      setTimeout(refresh, 1200);
+    }else{
+      toast("Check failed: " + ((res.data && res.data.error) || ("HTTP " + res.status)), "err");
+    }
+  });
+
+  $("#upd-install").addEventListener("click", () => openConfirm(
+    "Install firmware update",
+    "The new firmware will be downloaded and verified, then the device will restart. Continue?",
+    "Install",
+    async () => {
+      const res = await fetchJSON("POST", "/ota/update", {});
+      if (res.ok){
+        toast("Update started. The device will restart when it completes.", "ok");
+        setTimeout(refresh, 1500);
+      }else{
+        toast("Update failed: " + ((res.data && res.data.error) || ("HTTP " + res.status)), "err");
+      }
+    }));
+
+  $("#upd-save").addEventListener("click", async () => {
+    const interval = parseInt($("#upd_ota_check_interval_min").value, 10);
+    if (isNaN(interval) || interval < 5 || interval > 10080){
+      toast("Check interval must be 5-10080 minutes.", "err");
+      return;
+    }
+    const payload = {
+      ota_enable: $("#upd_ota_enable").checked ? 1 : 0,
+      ota_url: $("#upd_ota_url").value,
+      ota_check_interval_min: interval,
+    };
+    const res = await fetchJSON("POST", "/config", payload);
+    if (res.ok){
+      toast("OTA settings saved. Reboot to apply.", "ok");
+      formFilled = true;
+      refresh();
+    }else{
+      toast("Save failed: " + ((res.data && res.data.error) || ("HTTP " + res.status)), "err");
+    }
   });
 
   poll(refresh, 3000);

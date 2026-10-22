@@ -5,7 +5,36 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] — 2026-10-21
+
+### Added
+- **OTA-обновления** (`ota_handler.[ch]`): манифест `{ota_url}/version.json`,
+  сравнение semver, потоковая загрузка в свободный слот по HTTP, проверка
+  SHA-256 через PSA Crypto, `esp_ota_set_boot_partition()` и перезагрузка.
+  Периодическая проверка (`ota_enable`, `ota_check_interval_min`) только
+  сообщает о версии; установка — вручную (`POST /ota/update`). Эндпоинты:
+  `GET /ota/status`, `POST /ota/check`, `POST /ota/update`.
+- **Откат прошивки** (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`): новый образ
+  подтверждается только после успешного self-test
+  (`esp_ota_mark_app_valid_cancel_rollback`), иначе bootloader возвращает
+  предыдущий слот.
+- **Файловый менеджер SD**: `GET /sd/list` (навигация по каталогам) и
+  `GET /sd/download` (потоковое скачивание) с защитой от path traversal.
+- **Экспорт настроек**: `GET /config/export` отдаёт `gateway-config.json`
+  (`format`, `firmware_version`, `exported_at`, вложенный `config`) без
+  `wifi_password` / `sta_password`.
+- **`tools/ota_server.py`** — сервер манифеста и образа (только stdlib).
+- **Веб-интерфейс:** вкладки **Files** и **Update**, поля OTA в Configuration,
+  кнопка **Export settings**.
+- Явная версия `1.4.0` (`project(gateway VERSION 1.4.0)`).
+
+### Changed
+- **Раскладка разделов:** `factory` 1.625 МБ + `ota_0` 1.625 МБ + SPIFFS 640 КБ
+  (было `factory` 2.5 МБ + SPIFFS 1.375 МБ). `nvs`/`otadata` не смещались,
+  настройки сохраняются при обычной прошивке.
+- `CONFIG_LWIP_MAX_SOCKETS` поднят с 16 до 20; `max_uri_handlers` — с 24 до 32.
+- CSV self-test поддерживает альтернативные ожидаемые статусы (`200|503`) для
+  конфигурационно-зависимых эндпоинтов.
 
 ### Fixed
 - **SHT21:** датчик не отдавал измерения (`SHT21 read failed`) из-за неверного
@@ -13,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   одним `transmit_receive`, как в hold-режиме, и сенсор отвечал NACK.
   Теперь команда отправляется отдельно, выдерживается пауза преобразования
   (85 мс для T, 30 мс для RH) и только затем читается результат.
+
+### Migration
+- Прошить обычным `./build_and_flash.sh flash` (без `erase-flash`). NVS и
+  `otadata` остаются на прежних адресах, поэтому настройки и Wi-Fi-креды
+  сохраняются. После прошивки устройство загружается с `factory`.
 
 ## [1.3.1] — 2026-10-21
 

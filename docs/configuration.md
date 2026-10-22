@@ -53,6 +53,9 @@
 | `mqtt_en` | u8 | `0` | `mqtt_enable` | Публикация MQTT вкл/выкл |
 | `mqtt_url` | str | (нет) | `mqtt_broker_url` | URL брокера (≤255) |
 | `mqtt_topic` | str | (нет) | `mqtt_topic_prefix` | Префикс топика (≤64, по умолчанию `gateway`) |
+| `ota_enable` | u8 | `0` | `ota_enable` | Периодическая проверка обновлений вкл/выкл |
+| `ota_url` | str | (нет) | `ota_url` | Базовый URL OTA-сервера (≤255) |
+| `ota_check_min` | u32 | `360` | `ota_check_interval_min` | Интервал проверки, минуты (5–10080) |
 | `ext_pwr_en` | u8 | `0` | `ext_pwr_enable` | Управление питанием внешнего устройства вкл/выкл |
 | `ext_rst_en` | u8 | `0` | `ext_rst_enable` | Управление сбросом внешнего устройства вкл/выкл |
 | `ext_pwr_pin` | u32 | `19` | `pins.ext_pwr` | GPIO питания внешнего устройства |
@@ -142,8 +145,27 @@ curl -X POST http://192.168.4.1/config \
 ### Слишком длинные строки
 
 ```json
-{"error":"String too long (wifi_ssid<=31, wifi_password<=63, server_url<=255, mqtt_broker_url<=255, mqtt_topic_prefix<=64)"}
+{"error":"String too long (wifi_ssid<=31, wifi_password<=63, server_url<=255, mqtt_broker_url<=255, mqtt_topic_prefix<=64, ota_url<=255)"}
 ```
+
+## OTA-обновления
+
+```bash
+curl -X POST http://192.168.4.1/config \
+  -H 'Content-Type: application/json' \
+  -d '{"ota_enable":1,"ota_url":"http://192.168.1.10:8000","ota_check_interval_min":360}'
+```
+
+- `ota_url` — база, по которой сервер отдаёт `version.json` и образ `.bin`.
+  HTTPS не поддерживается: используйте доверенную локальную сеть.
+- `ota_check_interval_min` — 5…10080 минут (по умолчанию 360 = 6 часов).
+- `ota_enable` включает только *периодическую проверку*; установка всегда
+  выполняется вручную (`POST /ota/update` или вкладка **Update**).
+- Изменения применяются после перезагрузки.
+
+Формат манифеста и пример сервера — в [`api.md`](api.md) и README
+(`tools/ota_server.py`). Целостность образа проверяется по SHA-256; при
+несовпадении или обрыве загрузки текущая прошивка остаётся активной.
 
 ## Переназначение GPIO на лету
 
@@ -191,6 +213,7 @@ curl -X POST http://192.168.4.1/config \
 | `UART_INVALID` | Telnet-мост включён при выключенном соответствующем UART |
 | `MQTT_INVALID` | MQTT включён без непустого URL брокера или URL длиннее 255 символов |
 | `EXT_INVALID` | `ext_rst_pulse_ms` вне диапазона 10–5000; `ext_pwr_pol` / `ext_rst_pol` не `0`/`1` |
+| `OTA_INVALID` | `ota_check_interval_min` вне диапазона 5–10080 или `ota_url` длиннее 255 символов |
 
 ### Флаг strapping-пинов
 
@@ -233,10 +256,12 @@ curl -X POST http://192.168.4.1/system/reset
 
 ## Резервное копирование и восстановление
 
-- **Экспорт:** `GET /config` отдаёт текущую конфигурацию (без паролей). Пины,
-  флаги и адреса можно сохранить и повторно применить через `POST /config`.
+- **Экспорт:** `GET /config/export` скачивает файл `gateway-config.json` с
+  обёрткой `{"format":1,"firmware_version":...,"exported_at":...,"config":{...}}`.
+  Вложенный `config` совпадает с `GET /config` (без паролей). `GET /config`
+  по-прежнему отдаёт «голый» объект для веб-интерфейса.
 - **Импорт:** передайте те же поля в `POST /config`. Отсутствующие поля не
-  изменяются.
+  изменяются. Автоматический импорт файла не поддерживается.
 - `wifi_password` и `sta_password` в экспорт не попадают — задавайте их
   отдельно.
 

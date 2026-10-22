@@ -5,7 +5,36 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
-## [Unreleased]
+## [1.4.0] — 2026-10-21
+
+### Добавлено
+- OTA-обновления по HTTP (`factory` + `ota_0`): манифест `version.json`,
+  semver-сравнение, потоковая запись через `esp_ota_*`, проверка SHA-256 (PSA
+  Crypto) и перезагрузка в новый слот. Периодическая проверка только сообщает
+  о версии; установка — вручную (`POST /ota/update`).
+- Откат bootloader'ом: образ подтверждается после успешного self-test; иначе
+  следующая перезагрузка возвращает предыдущую прошивку.
+- Эндпоинты `GET /ota/status`, `POST /ota/check`, `POST /ota/update`.
+- Файловый менеджер SD: `GET /sd/list` и `GET /sd/download` (потоковая отдача,
+  защита от path traversal).
+- Экспорт настроек: `GET /config/export` (JSON-файл без секретов).
+- `tools/ota_server.py` — сервер манифеста и образа.
+- Вкладки **Files** и **Update** в веб-интерфейсе, поля OTA в Configuration,
+  кнопка **Export settings**.
+- Явная версия `1.4.0` в корневом `CMakeLists.txt`.
+
+### Изменено
+- Новая раскладка разделов: `factory` 1.625 МБ + `ota_0` 1.625 МБ + SPIFFS
+  640 КБ. `nvs`/`otadata` не смещены, настройки сохраняются.
+- `CONFIG_LWIP_MAX_SOCKETS` 16 → 20, `max_uri_handlers` 24 → 32.
+- CSV self-test поддерживает альтернативные статусы (`200|503`).
+
+### Исправлено
+- SHT21: корректный режим *no hold master* с паузой преобразования.
+
+### Миграция
+- Прошить обычным `./build_and_flash.sh flash` без `erase-flash`: настройки
+  сохраняются, после прошивки устройство грузится с `factory`.
 
 ## [1.2.0] — 2026-10-16
 

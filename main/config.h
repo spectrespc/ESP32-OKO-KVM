@@ -12,6 +12,11 @@
 #define EXT_PWR_POL_DEFAULT      1
 #define EXT_RST_POL_DEFAULT      0
 
+// OTA update defaults and limits. The check interval defaults to 6 hours.
+#define OTA_CHECK_INTERVAL_MIN_DEFAULT 360
+#define OTA_CHECK_INTERVAL_MIN         5
+#define OTA_CHECK_INTERVAL_MAX         10080
+
 // Reconfigurable GPIO assignments. Every subsystem pin can be overridden via
 // POST /config and is persisted to NVS. Defaults come from PIN_DEFAULT_* in
 // pins.h (see config.c).
@@ -73,6 +78,11 @@ typedef struct {
     uint8_t mqtt_enable;        // 0=off, 1=on (default: 0)
     char* mqtt_broker_url;      // e.g. "mqtt://192.168.1.100:1883" (NULL if unset)
     char* mqtt_topic_prefix;    // e.g. "gateway" -> topics: gateway/sht21, ...
+    // Firmware updates (see ota_handler.c). The base URL serves version.json
+    // and the .bin image; periodic checks are off unless ota_enable is set.
+    uint8_t  ota_enable;             // 0=off, 1=periodic checks on (default: 0)
+    char*    ota_url;                // e.g. "http://192.168.1.10:8000" (NULL if unset)
+    uint32_t ota_check_interval_min; // 5-10080 minutes (default: 360)
     // External device power/reset control (see ext_control.c).
     uint8_t  ext_pwr_enable;    // 0=off, 1=on (default: 0)
     uint8_t  ext_rst_enable;    // 0=off, 1=on (default: 0)
@@ -86,6 +96,12 @@ typedef struct {
 void init_config(void);
 app_config_t* get_config(void);
 char* get_config_json(void);
+
+// Builds the downloadable export wrapper:
+//   {"format":1,"firmware_version":"x.y.z","exported_at":<uptime_s>,
+//    "config":{...}}
+// The nested configuration is exactly the GET /config object (no secrets).
+char* get_config_export_json(void);
 void set_config(app_config_t* config);
 void save_config(void);
 void load_config(void);

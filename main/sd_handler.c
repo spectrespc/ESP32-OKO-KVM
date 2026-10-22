@@ -7,14 +7,23 @@
 #include "esp_vfs_fat.h"
 #include "pins.h"
 #include "sdkconfig.h"
+#include "cJSON.h"
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 static const char* TAG = "sd_handler";
+
+#define SD_MOUNT_POINT       "/sdcard"
+#define SD_REL_PATH_MAX      240
+#define SD_FULL_PATH_MAX     512
+#define SD_LIST_MAX_ENTRIES  128
+
 static bool sd_initialized = false;
 static sdmmc_card_t* sd_card = NULL;
 
@@ -71,7 +80,7 @@ void init_sd_handler(void)
     // Initialize FAT filesystem
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = true,
-        .max_files = 5,
+        .max_files = 8,
         .allocation_unit_size = 16 * 1024
     };
 
@@ -225,16 +234,236 @@ int sd_read_data(const char* filename, uint8_t* buffer, size_t buffer_size)
     return (int)read;
 }
 
-int sd_list_files(char* buffer, size_t buffer_size)
+// Normalizes a caller-supplied relative path: strips leading/trailing slashes,
+// treats "." as the root and rejects traversal, backslashes and control bytes.
+// The result is a relative path without a leading slash ("" means the root).
+static bool sd_normalize_rel(const char* rel, char* out, size_t out_len)
 {
-    if (!sd_initialized || !buffer || buffer_size == 0) {
-        return -1;
+    if (!rel) {
+        rel = "";
+    }
+    while (*rel == '/') {
+        rel++;
+    }
+    size_t len = strlen(rel);
+    while (len > 0 && rel[len - 1] == '/') {
+        len--;
+    }
+    if (len >= out_len) {
+        return false;
+    }
+    memcpy(out, rel, len);
+    out[len] = '\0';
+
+    if (strcmp(out, ".") == 0) {
+        out[0] = '\0';
+    }
+    if (strstr(out, "..") || strchr(out, '\\')) {
+        return false;
+    }
+    for (const unsigned char* p = (const unsigned char*)out; *p; p++) {
+        if (*p < 0x20) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool sd_rel_path_valid(const char* rel)
+{
+    char normalized[SD_REL_PATH_MAX];
+    return sd_normalize_rel(rel, normalized, sizeof(normalized));
+}
+
+// Joins a and b with a single '/' and fails (rather than truncating) when the
+// result does not fit.
+static bool join_path(char* out, size_t out_len, const char* a, const char* b)
+{
+    size_t alen = a ? strlen(a) : 0;
+    size_t blen = b ? strlen(b) : 0;
+    if (alen + 1 + blen + 1 > out_len) {
+        return false;
+    }
+    if (alen) {
+        memcpy(out, a, alen);
+    }
+    out[alen] = '/';
+    if (blen) {
+        memcpy(out + alen + 1, b, blen);
+    }
+    out[alen + 1 + blen] = '\0';
+    return true;
+}
+
+bool sd_resolve_path(const char* rel, char* out, size_t out_len)
+{
+    char normalized[SD_REL_PATH_MAX];
+    if (!sd_normalize_rel(rel, normalized, sizeof(normalized))) {
+        return false;
+    }
+    int written = normalized[0]
+                  ? snprintf(out, out_len, SD_MOUNT_POINT "/%s", normalized)
+                  : snprintf(out, out_len, SD_MOUNT_POINT);
+    return written > 0 && (size_t)written < out_len;
+}
+
+int sd_list_dir(const char* rel, char** json_out)
+{
+    if (!json_out) {
+        return SD_LIST_ERR_INVALID_PATH;
+    }
+    *json_out = NULL;
+
+    char normalized[SD_REL_PATH_MAX];
+    if (!sd_normalize_rel(rel, normalized, sizeof(normalized))) {
+        return SD_LIST_ERR_INVALID_PATH;
+    }
+    if (!sd_initialized) {
+        return SD_LIST_ERR_NOT_MOUNTED;
     }
 
-    // In a real implementation, this would list files in the directory
-    // For now, we'll return a simple response
-    snprintf(buffer, buffer_size, "{\"files\":[]}");
-    return 0;
+    char dir_path[SD_FULL_PATH_MAX];
+    if (!sd_resolve_path(normalized, dir_path, sizeof(dir_path))) {
+        return SD_LIST_ERR_INVALID_PATH;
+    }
+
+    DIR* dir = opendir(dir_path);
+    if (!dir) {
+        ESP_LOGE(TAG, "opendir(%s) failed: errno %d", dir_path, errno);
+        return SD_LIST_ERR_OPEN;
+    }
+
+    cJSON* arr = cJSON_CreateArray();
+    if (!arr) {
+        closedir(dir);
+        return SD_LIST_ERR_NO_MEM;
+    }
+
+    int count = 0;
+    bool truncated = false;
+
+    // Two passes: directories first, then regular files. readdir order is
+    // filesystem-dependent, so this keeps the UI usable without allocating a
+    // separate in-RAM listing.
+    for (int pass = 0; pass < 2; pass++) {
+        rewinddir(dir);
+        struct dirent* ent;
+        while ((ent = readdir(dir)) != NULL) {
+            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+                continue;
+            }
+            // Names the listing helpers would reject must not be advertised.
+            if (strstr(ent->d_name, "..") || strchr(ent->d_name, '\\')) {
+                continue;
+            }
+
+            char child_full[SD_FULL_PATH_MAX];
+            if (!join_path(child_full, sizeof(child_full), dir_path, ent->d_name)) {
+                continue;
+            }
+
+            struct stat st;
+            if (stat(child_full, &st) != 0) {
+                continue;
+            }
+            bool is_dir = S_ISDIR(st.st_mode);
+            if ((pass == 0) != is_dir) {
+                continue;
+            }
+            // Only expose directories and regular files.
+            if (!is_dir && !S_ISREG(st.st_mode)) {
+                continue;
+            }
+            if (count >= SD_LIST_MAX_ENTRIES) {
+                truncated = true;
+                continue;
+            }
+
+            char child_rel[SD_FULL_PATH_MAX];
+            if (normalized[0]) {
+                if (!join_path(child_rel, sizeof(child_rel), normalized, ent->d_name)) {
+                    continue;
+                }
+            } else {
+                snprintf(child_rel, sizeof(child_rel), "%s", ent->d_name);
+            }
+            // Do not advertise entries that would not pass our own path checks.
+            if (strlen(child_rel) >= SD_REL_PATH_MAX) {
+                continue;
+            }
+
+            cJSON* item = cJSON_CreateObject();
+            if (!item) {
+                continue;
+            }
+            cJSON_AddStringToObject(item, "name", ent->d_name);
+            cJSON_AddStringToObject(item, "path", child_rel);
+            cJSON_AddBoolToObject(item, "is_dir", is_dir);
+            cJSON_AddNumberToObject(item, "size", (double)st.st_size);
+            cJSON_AddItemToArray(arr, item);
+            count++;
+        }
+    }
+
+    closedir(dir);
+
+    if (truncated) {
+        ESP_LOGW(TAG, "Directory listing truncated at %d entries", count);
+    }
+
+    char* out = cJSON_PrintUnformatted(arr);
+    cJSON_Delete(arr);
+    if (!out) {
+        return SD_LIST_ERR_NO_MEM;
+    }
+    *json_out = out;
+    return SD_LIST_OK;
+}
+
+int sd_list_files(char* buffer, size_t buffer_size)
+{
+    if (!buffer || buffer_size == 0) {
+        return -1;
+    }
+    char* json = NULL;
+    if (sd_list_dir("", &json) != SD_LIST_OK) {
+        return -1;
+    }
+    int needed = snprintf(buffer, buffer_size, "%s", json);
+    free(json);
+    return (needed >= 0 && (size_t)needed < buffer_size) ? 0 : -1;
+}
+
+FILE* sd_open_file(const char* rel, size_t* size_out)
+{
+    if (size_out) {
+        *size_out = 0;
+    }
+    if (!sd_initialized) {
+        return NULL;
+    }
+
+    char path[SD_FULL_PATH_MAX];
+    if (!sd_resolve_path(rel, path, sizeof(path))) {
+        return NULL;
+    }
+
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        return NULL;
+    }
+    if (st.st_size < 0) {
+        return NULL;
+    }
+
+    FILE* file = fopen(path, "rb");
+    if (!file) {
+        return NULL;
+    }
+    if (size_out) {
+        *size_out = (size_t)st.st_size;
+    }
+    return file;
 }
 
 void sd_cleanup(void)

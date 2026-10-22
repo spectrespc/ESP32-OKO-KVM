@@ -35,8 +35,15 @@
   которая умеет сканировать и подключаться к внешней сети.
 - **HTTP REST API** на порту 80 с JSON-полезной нагрузкой.
 - **Веб-интерфейс** — одностраничное приложение, отдаваемое из раздела SPIFFS
-  (SD-карта не требуется), с 7 вкладками: Dashboard, Configuration, WiFi,
-  Sensors, SD Card, External и System Log.
+  (SD-карта не требуется), с вкладками Dashboard, Configuration, WiFi, Sensors,
+  SD Card, Files, Update, External, System Log и Account. Доступ защищён
+  cookie-сессией (по умолчанию `admin` / `admin`).
+- **OTA-обновления** по A/B-схеме (`factory` + `ota_0`): манифест
+  `version.json`, проверка SHA-256, установка вручную, откат bootloader'ом при
+  неподтверждённом образе. Сервер раздачи — `tools/ota_server.py`.
+- **Файловый менеджер SD** — просмотр каталогов и скачивание файлов через
+  веб-интерфейс (`GET /sd/list`, `GET /sd/download`).
+- **Экспорт настроек** в JSON-файл (`GET /config/export`, без секретов).
 - **I2C-датчики** — SHT21 (температура / влажность) и INA219 / INA226
   (напряжение шины, напряжение шунта, ток, мощность).
 - **Постоянная конфигурация** в NVS с семантикой частичного обновления.
@@ -117,7 +124,7 @@ idf.py -p /dev/ttyACM0 monitor
 ```
 gateway/
 ├── CMakeLists.txt          # Определение проекта верхнего уровня
-├── partitions.csv          # Пользовательская раскладка 4 МБ (2.5M app + 1.5M SPIFFS)
+├── partitions.csv          # Пользовательская раскладка 4 МБ (factory 1.625M + ota_0 1.625M + 640K SPIFFS)
 ├── sdkconfig.defaults      # Значения SDK по умолчанию (target, console, SPIFFS, ...)
 ├── build_and_flash.sh      # Канонический скрипт build/flash/monitor/test
 ├── main/
@@ -134,21 +141,24 @@ gateway/
 │   ├── wifi_ap.[ch]        # Инициализация Wi-Fi (режим AP+STA, SoftAP)
 │   ├── wifi_scan.[ch]      # STA: сканирование/подключение/статус/отключение
 │   ├── system_handler.[ch] # Обработчики перезагрузки / сброса к заводским
-│   ├── self_test.[ch]      # HTTP self-test при загрузке
+│   ├── ota_handler.[ch]    # Манифест, semver, SHA-256, esp_ota_*, откат
+│   ├── self_test.[ch]      # HTTP self-test при загрузке + подтверждение OTA
 │   └── telnet_bridge.[ch]  # Ретрансляторы TCP -> UART0/UART1 (+ лог на SD)
 ├── web/
 │   └── index.html          # Самодостаточное SPA (инлайн CSS + JS)
 ├── tests/
 │   └── http_endpoints.csv  # Общая матрица ожиданий HTTP-эндпоинтов
 └── tools/
-    └── gen_http_tests.py   # Генератор C-заголовка из CSV для self-test
+    ├── gen_http_tests.py   # Генератор C-заголовка из CSV для self-test
+    └── ota_server.py       # HTTP-сервер манифеста version.json + образа
 ```
 
 ## Справочник REST API
 
-Все эндпоинты возвращают JSON, если не указано иное. Аутентификации нет;
-устройство рассчитано на доверенную локальную сеть (встроенную SoftAP или вашу
-собственную сеть Wi-Fi).
+Все эндпоинты возвращают JSON, если не указано иное. API защищён cookie-сессией
+(`POST /auth/login`, по умолчанию `admin` / `admin`); без сессии возвращается
+`401`. Устройство рассчитано на доверенную локальную сеть (встроенную SoftAP
+или вашу собственную сеть Wi-Fi).
 
 | Метод | Путь                 | Описание                                        | Успех |
 |-------|----------------------|-------------------------------------------------|-------|
@@ -159,6 +169,12 @@ gateway/
 | POST  | `/sensor`            | Принять полезную нагрузку датчика (отбрасывается)| 200  |
 | GET   | `/sd/status`         | Статус SD-карты                                 | 200   |
 | POST  | `/sd/write`          | Записать тело запроса на SD-карту               | 200   |
+| GET   | `/sd/list`           | Содержимое каталога SD (`?path=`)               | 200/503 |
+| GET   | `/sd/download`       | Скачать файл с SD (`?path=`)                    | 200/404/503 |
+| GET   | `/config/export`     | Экспорт настроек файлом (без секретов)          | 200   |
+| GET   | `/ota/status`        | Состояние OTA и версии                          | 200   |
+| POST  | `/ota/check`         | Проверить манифест сейчас                       | 202   |
+| POST  | `/ota/update`        | Скачать и установить обновление                 | 202   |
 | GET   | `/logs`              | Последние строки лога                           | 200   |
 | GET   | `/wifi/scan`         | Запустить асинхронное сканирование Wi-Fi        | 202   |
 | GET   | `/wifi/scan/results` | Результаты сканирования (или `scanning`)        | 200   |
@@ -432,9 +448,65 @@ Web-креды хранятся в NVS (пространство имён `auth`
 SPA — это единый самодостаточный файл `web/index.html` (инлайн CSS + JS),
 встраиваемый в раздел SPIFFS на этапе сборки и отдаваемый обработчиком
 статики HTTP-сервера. Откройте **http://192.168.4.1** после подключения к AP.
-Доступно восемь вкладок: Dashboard, Configuration, WiFi, Sensors, SD Card,
-External, System Log и Account. Вкладка Configuration строит выпадающие списки GPIO на
-клиенте из таблицы пинов ESP32-C6 и отключает пины, уже назначенные другой роли.
+Доступны вкладки Dashboard, Configuration, WiFi, Sensors, SD Card, Files,
+Update, External, System Log и Account. Вход — `admin` / `admin`. Вкладка
+Configuration строит выпадающие списки GPIO на клиенте из таблицы пинов
+ESP32-C6 и отключает пины, уже назначенные другой роли.
+
+## OTA-обновления
+
+Начиная с версии **1.4.0** прошивка обновляется по сети (HTTP) без USB. Схема
+A/B: разделы `factory` и `ota_0` по 1.625 МБ; новый образ пишется в свободный
+слот, проверяется по SHA-256 и выбирается загрузочным. Если после загрузки
+self-test не проходит, bootloader возвращается к предыдущему слоту.
+
+### Сервер обновлений
+
+`tools/ota_server.py` (только stdlib) раздаёт каталог с образом и отдаёт
+манифест `GET /version.json`:
+
+```bash
+mkdir -p firmware
+cp build/gateway.bin firmware/gateway-1.4.1.bin
+python3 tools/ota_server.py --root ./firmware \
+    --version 1.4.1 --filename gateway-1.4.1.bin --bind 0.0.0.0 --port 8000
+```
+
+Манифест:
+
+```json
+{"version":"1.4.1","filename":"gateway-1.4.1.bin","sha256":"<64 hex>"}
+```
+
+SHA-256 считается автоматически (или задаётся через `--sha256`). Сервер не
+сравнивает версии — это делает устройство; образ устанавливается только при
+версии манифеста строго больше текущей.
+
+### Настройка и установка
+
+1. Вкладка **Update** (или `POST /config`): `ota_enable=1`,
+   `ota_url=http://<host>:8000`, `ota_check_interval_min` (5–10080).
+2. **Check now** (`POST /ota/check`) — устройство читает манифест. Периодические
+   проверки только сообщают о доступной версии.
+3. **Install update** (`POST /ota/update`) — скачивание, проверка SHA-256,
+   перезагрузка в новый слот. Прогресс/результат видны в `GET /ota/status`.
+
+`sha256` обязателен: TLS не используется, поэтому целостность образа — основная
+защита в локальной сети. HTTPS, anti-rollback и автоматическая установка не
+поддерживаются.
+
+### Версия прошивки
+
+Источник версии — `project(gateway VERSION 1.4.0)` в корневом `CMakeLists.txt`
+(синхронно с `CHANGELOG.md`). Не создавайте файл `version.txt`: он имеет
+приоритет над `VERSION`.
+
+### Миграция раскладки разделов
+
+Переход со старой раскладки (2.5 МБ `factory` + 1.375 МБ SPIFFS) выполняется
+обычным `./build_and_flash.sh flash`: `nvs` и `otadata` остаются на прежних
+смещениях, настройки сохраняются. **Не используйте `erase-flash`**, если хотите
+сохранить конфигурацию. После прошивки устройство загружается с `factory`.
 
 ## Конфигурация
 
@@ -471,6 +543,9 @@ External, System Log и Account. Вкладка Configuration строит вы�
 | `mqtt_en`       | u8   | `0`          | Публикация в MQTT вкл/выкл         |
 | `mqtt_url`      | str  | (нет)        | URL брокера (`mqtt://` или `mqtts://`) |
 | `mqtt_topic`    | str  | (нет)        | Префикс топика (по умолчанию `gateway`) |
+| `ota_enable`    | u8   | `0`          | Периодическая проверка обновлений вкл/выкл |
+| `ota_url`       | str  | (нет)        | Базовый URL OTA-сервера |
+| `ota_check_min` | u32  | `360`        | Интервал проверки, минуты (5-10080) |
 | `ext_pwr_en`    | u8   | `0`          | Управление питанием внешнего устройства вкл/выкл |
 | `ext_rst_en`    | u8   | `0`          | Управление сбросом внешнего устройства вкл/выкл  |
 | `ext_pwr_pol`   | u8   | `1`          | Полярность питания (0=active-low, 1=active-high) |
@@ -493,6 +568,8 @@ External, System Log и Account. Вкладка Configuration строит вы�
   `idf.py` отсутствует в `PATH`.
 - **`tools/gen_http_tests.py`** — генерирует таблицу ожиданий self-test из
   `tests/http_endpoints.csv`. Вызывается автоматически CMake во время сборки.
+- **`tools/ota_server.py`** — минимальный HTTP-сервер для раздачи
+  `version.json` и образа прошивки (см. раздел «OTA-обновления»).
 
 ## Тестирование
 
@@ -500,7 +577,9 @@ External, System Log и Account. Вкладка Configuration строит вы�
   пишет результаты в консоль. Таблица ожиданий генерируется из
   `tests/http_endpoints.csv`; разрушающие эндпоинты `/system/*` и `/ext/reset`
   пропускаются, чтобы устройство не перезагружалось и не дёргало внешнее
-  устройство посреди теста.
+  устройство посреди теста. Для эндпоинтов, зависящих от сохранённой
+  конфигурации (`/sd/*`, `/ext/power`), в CSV можно указать альтернативные
+  статусы через `|` (например `200|503`).
 - **Матрица HTTP-эндпоинтов:** `./build_and_flash.sh test` выполняет каждую
   строку `tests/http_endpoints.csv` через `curl` по адресу `TEST_HOST`
   (по умолчанию `192.168.4.1`). Хост должен быть подключён к SoftAP.
@@ -529,8 +608,15 @@ writes to an SD card, and reads I2C environmental / power-monitoring sensors.
   scan and connect to an external network.
 - **HTTP REST API** on port 80 with JSON payloads.
 - **Web UI** — a single-page app served from an on-board SPIFFS partition
-  (no SD card required), with 7 tabs: Dashboard, Configuration, WiFi, Sensors,
-  SD Card, External and System Log.
+  (no SD card required), with Dashboard, Configuration, WiFi, Sensors, SD Card,
+  Files, Update, External, System Log and Account tabs. Access is protected by
+  a cookie session (default `admin` / `admin`).
+- **OTA updates** with an A/B layout (`factory` + `ota_0`): `version.json`
+  manifest, SHA-256 verification, manual install and bootloader rollback of an
+  unconfirmed image. The publishing server is `tools/ota_server.py`.
+- **SD file manager** — browse directories and download files from the web UI
+  (`GET /sd/list`, `GET /sd/download`).
+- **Settings export** to a JSON file (`GET /config/export`, no secrets).
 - **I2C sensors** — SHT21 (temperature / humidity) and INA219 / INA226
   (bus voltage, shunt voltage, current, power).
 - **Persistent configuration** in NVS with partial-update semantics.
@@ -609,7 +695,7 @@ Environment overrides: `IDF_PATH_OVERRIDE`, `IDF_TOOLS_PATH`, `PORT`,
 ```
 gateway/
 ├── CMakeLists.txt          # Top-level project definition
-├── partitions.csv          # Custom 4 MB layout (2.5M app + 1.5M SPIFFS)
+├── partitions.csv          # Custom 4 MB layout (factory 1.625M + ota_0 1.625M + 640K SPIFFS)
 ├── sdkconfig.defaults      # SDK defaults (target, console, SPIFFS, ...)
 ├── build_and_flash.sh      # Canonical build/flash/monitor/test script
 ├── main/
@@ -626,14 +712,16 @@ gateway/
 │   ├── wifi_ap.[ch]        # Wi-Fi init (AP+STA mode, SoftAP)
 │   ├── wifi_scan.[ch]      # STA scan/connect/status/disconnect
 │   ├── system_handler.[ch] # Reboot / factory-reset handlers
-│   ├── self_test.[ch]      # Boot-time HTTP endpoint self-test
+│   ├── ota_handler.[ch]    # Manifest, semver, SHA-256, esp_ota_*, rollback
+│   ├── self_test.[ch]      # Boot-time HTTP self-test + OTA confirmation
 │   └── telnet_bridge.[ch]  # TCP -> UART0/UART1 relays (+ optional SD log)
 ├── web/
 │   └── index.html          # Self-contained SPA (inline CSS + JS)
 ├── tests/
 │   └── http_endpoints.csv  # Shared HTTP expectation matrix
 └── tools/
-    └── gen_http_tests.py   # CSV -> C header generator for the self-test
+    ├── gen_http_tests.py   # CSV -> C header generator for the self-test
+    └── ota_server.py       # version.json manifest + firmware HTTP server
 ```
 
 ## REST API Reference
@@ -654,6 +742,12 @@ device's own IP addresses are trusted so the on-boot self-test keeps working.
 | POST   | `/sensor`            | Accept a sensor payload (currently discarded)  | 200     |
 | GET    | `/sd/status`         | SD card status                                 | 200     |
 | POST   | `/sd/write`          | Write the request body to the SD card          | 200     |
+| GET    | `/sd/list`           | List an SD directory (`?path=`)                 | 200/503 |
+| GET    | `/sd/download`       | Download an SD file (`?path=`)                  | 200/404/503 |
+| GET    | `/config/export`     | Download settings as a JSON file (no secrets)   | 200     |
+| GET    | `/ota/status`        | OTA state and firmware versions                 | 200     |
+| POST   | `/ota/check`         | Check the manifest now                          | 202     |
+| POST   | `/ota/update`        | Download and install an update                  | 202     |
 | GET    | `/logs`              | Recent log lines                               | 200     |
 | GET    | `/wifi/scan`         | Start an asynchronous Wi-Fi scan               | 202     |
 | GET    | `/wifi/scan/results` | Scan results (or `scanning`)                   | 200     |
@@ -923,11 +1017,66 @@ active session.
 
 The SPA is a single self-contained `web/index.html` (inline CSS + JS) baked into
 the SPIFFS partition at build time and served by the HTTP server's catch-all
-handler. Open **http://192.168.4.1** after joining the AP. It has eight tabs:
-Dashboard, Configuration, WiFi, Sensors, SD Card, External, System Log and
-Account. The
-Configuration tab renders GPIO dropdowns client-side from the ESP32-C6 pin table
-and disables pins already assigned to another role.
+handler. Open **http://192.168.4.1** after joining the AP. It has Dashboard,
+Configuration, WiFi, Sensors, SD Card, Files, Update, External, System Log and
+Account tabs. Sign in with `admin` / `admin`. The Configuration tab renders GPIO
+dropdowns client-side from the ESP32-C6 pin table and disables pins already
+assigned to another role.
+
+## OTA Updates
+
+From version **1.4.0** the firmware updates over the network (HTTP) without USB.
+The A/B layout uses `factory` and `ota_0` (1.625 MB each): the new image is
+written to the idle slot, verified by SHA-256 and selected for boot. If the
+post-boot self-test fails, the bootloader returns to the previous slot.
+
+### Update server
+
+`tools/ota_server.py` (stdlib only) serves the image directory and a manifest at
+`GET /version.json`:
+
+```bash
+mkdir -p firmware
+cp build/gateway.bin firmware/gateway-1.4.1.bin
+python3 tools/ota_server.py --root ./firmware \
+    --version 1.4.1 --filename gateway-1.4.1.bin --bind 0.0.0.0 --port 8000
+```
+
+Manifest:
+
+```json
+{"version":"1.4.1","filename":"gateway-1.4.1.bin","sha256":"<64 hex>"}
+```
+
+The SHA-256 is computed automatically (or supplied with `--sha256`). The server
+does not compare versions; the device installs only when the manifest version is
+strictly greater than the running one.
+
+### Configure and install
+
+1. **Update** tab (or `POST /config`): `ota_enable=1`,
+   `ota_url=http://<host>:8000`, `ota_check_interval_min` (5–10080).
+2. **Check now** (`POST /ota/check`) reads the manifest. Periodic checks only
+   report an available version.
+3. **Install update** (`POST /ota/update`) downloads, verifies SHA-256 and
+   reboots into the new slot. Progress/result appear in `GET /ota/status`.
+
+`sha256` is mandatory: TLS is not used, so image integrity is the primary
+protection on a local network. HTTPS, anti-rollback and automatic installation
+are out of scope.
+
+### Firmware version
+
+The version source is `project(gateway VERSION 1.4.0)` in the root
+`CMakeLists.txt` (kept in sync with `CHANGELOG.md`). Do not add a `version.txt`
+file: it takes precedence over `VERSION`.
+
+### Partition migration
+
+Moving from the old layout (2.5 MB `factory` + 1.375 MB SPIFFS) is done with a
+normal `./build_and_flash.sh flash`: `nvs` and `otadata` keep their offsets, so
+settings survive. **Do not use `erase-flash`** if you want to keep the
+configuration. After flashing the device boots from `factory`.
 
 ## Configuration
 
@@ -964,6 +1113,9 @@ Configuration lives in the NVS `storage` namespace. Keys (≤15 chars):
 | `mqtt_en`       | u8   | `0`          | MQTT publishing on/off              |
 | `mqtt_url`      | str  | (unset)      | Broker URL (`mqtt://` or `mqtts://`)|
 | `mqtt_topic`    | str  | (unset)      | Topic prefix (default `gateway`)    |
+| `ota_enable`    | u8   | `0`          | Periodic OTA checks on/off          |
+| `ota_url`       | str  | (unset)      | OTA server base URL                 |
+| `ota_check_min` | u32  | `360`        | Check interval, minutes (5-10080)   |
 | `ext_pwr_en`    | u8   | `0`          | External power control on/off       |
 | `ext_rst_en`    | u8   | `0`          | External reset control on/off       |
 | `ext_pwr_pol`   | u8   | `1`          | Power polarity (0=active-low, 1=active-high) |
@@ -986,6 +1138,8 @@ defaults).
 - **`tools/gen_http_tests.py`** — generates the on-device self-test expectation
   table from `tests/http_endpoints.csv`. It is invoked automatically by CMake
   during the build.
+- **`tools/ota_server.py`** — a minimal HTTP server for `version.json` and the
+  firmware image (see “OTA Updates”).
 
 ## Testing
 
@@ -993,10 +1147,14 @@ defaults).
   results to the console. The expectation table is generated from
   `tests/http_endpoints.csv`; destructive `/system/*` and `/ext/reset` endpoints
   are skipped so the device does not reboot and the external device is not
-  disturbed mid-test.
+  disturbed mid-test. Configuration-dependent endpoints (`/sd/*`,
+  `/ext/power`) may list alternative statuses separated by `|`
+  (e.g. `200|503`).
 - **HTTP endpoint matrix:** `./build_and_flash.sh test` runs every row of
   `tests/http_endpoints.csv` with `curl` against `TEST_HOST`
-  (default `192.168.4.1`). The host must be joined to the SoftAP.
+  (default `192.168.4.1`). The host must be joined to the SoftAP. The script
+  logs in with `TEST_USER`/`TEST_PASS` (default `admin`/`admin`) and reuses the
+  session cookie for all requests.
 
 Both consumers share the same CSV, so the on-device and host-side tests stay in
 sync.
