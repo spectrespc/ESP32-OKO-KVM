@@ -330,8 +330,19 @@ curl -X POST http://192.168.4.1/wifi/disconnect
 ```
 
 `GET /wifi/status` возвращает
-`{"connected":true,"ssid":"MyNetwork","ip":"192.168.1.42","rssi":-51,"state":"connected"}`.
+`{"connected":true,"ssid":"MyNetwork","ip":"192.168.1.42","rssi":-51,"state":"connected","attempts":3,"fail_streak":0,"last_disconnect_reason":-1,"last_disconnect_reason_name":"none","last_disconnect_age_s":-1,"next_retry_in_ms":0,"radio_restarts":0,"power_save":"none"}`.
 `POST /wifi/connect` без поля `ssid` возвращает `400`.
+
+Станция переподключается бесконечно: задержка между попытками нарастает
+1 → 2 → 5 → 10 → 20 → 30 → 60 с и далее остаётся 60 с. Счётчик неудач
+сбрасывается только после получения IP. Через 10 минут непрерывных неудач
+выполняется мягкий рестарт радио (`esp_wifi_stop`/`esp_wifi_start`), не чаще
+раза в 10 минут: SoftAP пропадает на 1–2 с, перезагрузки устройства нет.
+Wi-Fi modem sleep отключён (`power_save: "none"`), так как шлюз питается от
+сети. Диагностика доступна в полях `attempts`, `fail_streak`,
+`last_disconnect_reason_name`, `last_disconnect_age_s`, `next_retry_in_ms` и
+`radio_restarts`. `POST /wifi/disconnect` останавливает автопереподключение до
+следующего `POST /wifi/connect`.
 
 ### Управление внешним устройством
 
@@ -431,7 +442,9 @@ SHT21 и устройства INA делят адрес `0x40` по умолча
   **http://192.168.4.1**.
 - **Режим STA:** станция работает параллельно с AP. Найдите сети на вкладке WiFi
   и подключитесь. Учётные данные STA хранятся отдельно от учётных данных AP в
-  NVS (`sta_ssid` / `sta_password`) и восстанавливаются при загрузке.
+  NVS (`sta_ssid` / `sta_password`) и восстанавливаются при загрузке. При потере
+  связи переподключение повторяется бесконечно (backoff 1–60 с, мягкий рестарт
+  радио после 10 минут неудач); modem sleep отключён для стабильности линка.
 
 ### Учётные данные по умолчанию
 
@@ -497,7 +510,7 @@ SHA-256 считается автоматически (или задаётся �
 
 ### Версия прошивки
 
-Источник версии — `project(gateway VERSION 1.4.0)` в корневом `CMakeLists.txt`
+Источник версии — `project(gateway VERSION 1.4.1)` в корневом `CMakeLists.txt`
 (синхронно с `CHANGELOG.md`). Не создавайте файл `version.txt`: он имеет
 приоритет над `VERSION`.
 
@@ -902,8 +915,19 @@ curl -X POST http://192.168.4.1/wifi/disconnect
 ```
 
 `GET /wifi/status` returns
-`{"connected":true,"ssid":"MyNetwork","ip":"192.168.1.42","rssi":-51,"state":"connected"}`.
+`{"connected":true,"ssid":"MyNetwork","ip":"192.168.1.42","rssi":-51,"state":"connected","attempts":3,"fail_streak":0,"last_disconnect_reason":-1,"last_disconnect_reason_name":"none","last_disconnect_age_s":-1,"next_retry_in_ms":0,"radio_restarts":0,"power_save":"none"}`.
 `POST /wifi/connect` with a missing `ssid` returns `400`.
+
+The station retries forever: the delay between attempts grows
+1 → 2 → 5 → 10 → 20 → 30 → 60 s and stays at 60 s. The failure counter is reset
+only after an IP is obtained. After 10 minutes of continuous failures the radio
+is restarted softly (`esp_wifi_stop`/`esp_wifi_start`), at most once every
+10 minutes: the SoftAP disappears for 1–2 s and the device does not reboot.
+Wi-Fi modem sleep is disabled (`power_save: "none"`) because the gateway is
+mains-powered. Diagnostics are exposed through `attempts`, `fail_streak`,
+`last_disconnect_reason_name`, `last_disconnect_age_s`, `next_retry_in_ms` and
+`radio_restarts`. `POST /wifi/disconnect` stops automatic reconnection until the
+next `POST /wifi/connect`.
 
 ### External Device Control
 
@@ -1001,6 +1025,8 @@ rejects a configuration where:
 - **STA mode:** the station side runs alongside the AP. Scan for networks in
   the WiFi tab, then connect. STA credentials are stored separately from the AP
   credentials in NVS (`sta_ssid` / `sta_password`) and are restored on boot.
+  Link loss is retried forever (1–60 s backoff, soft radio restart after
+  10 minutes of failures); modem sleep is disabled for link stability.
 
 ### Default Credentials
 
@@ -1067,7 +1093,7 @@ are out of scope.
 
 ### Firmware version
 
-The version source is `project(gateway VERSION 1.4.0)` in the root
+The version source is `project(gateway VERSION 1.4.1)` in the root
 `CMakeLists.txt` (kept in sync with `CHANGELOG.md`). Do not add a `version.txt`
 file: it takes precedence over `VERSION`.
 

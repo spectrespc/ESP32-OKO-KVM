@@ -556,12 +556,33 @@ curl http://192.168.4.1/wifi/status
   "ssid": "MyNetwork",
   "ip": "192.168.1.42",
   "rssi": -51,
-  "state": "connected"
+  "state": "connected",
+  "attempts": 3,
+  "fail_streak": 0,
+  "last_disconnect_reason": -1,
+  "last_disconnect_reason_name": "none",
+  "last_disconnect_age_s": -1,
+  "next_retry_in_ms": 0,
+  "radio_restarts": 0,
+  "power_save": "none"
 }
 ```
 
 Поле `state` может принимать значения: `idle`, `connecting`, `connected`,
 `disconnected`, `error`.
+
+Диагностические поля:
+
+| Поле | Описание |
+|------|----------|
+| `attempts` | Всего попыток подключения с момента загрузки. |
+| `fail_streak` | Неудачных попыток подряд; сбрасывается после получения IP. |
+| `last_disconnect_reason` | Числовой код причины последнего обрыва (`WIFI_REASON_*`), `-1` — обрывов не было. |
+| `last_disconnect_reason_name` | Имя причины (`BEACON_TIMEOUT`, `NO_AP_FOUND`, …) или `none`. |
+| `last_disconnect_age_s` | Секунд с последнего обрыва, `-1` — обрывов не было. |
+| `next_retry_in_ms` | Миллисекунд до следующей попытки; `0` вне `disconnected`/`error`. |
+| `radio_restarts` | Количество мягких рестартов радио (выполняются не чаще раза в 10 минут). |
+| `power_save` | Фактический режим Wi-Fi power save: `none`, `min_modem` или `max_modem`. |
 
 ## `POST /wifi/disconnect`
 

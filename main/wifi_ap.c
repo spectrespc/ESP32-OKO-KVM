@@ -120,6 +120,19 @@ esp_err_t wifi_init(void)
         return err;
     }
 
+    // The gateway is mains-powered, so modem sleep buys nothing and only adds
+    // risk in AP+STA: a station that sleeps most of the time can miss beacons
+    // and drop the link with WIFI_REASON_BEACON_TIMEOUT while RSSI is fine.
+    err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_set_ps(WIFI_PS_NONE) failed: %s", esp_err_to_name(err));
+    } else {
+        wifi_ps_type_t ps = WIFI_PS_MIN_MODEM;
+        if (esp_wifi_get_ps(&ps) == ESP_OK) {
+            ESP_LOGI(TAG, "Wi-Fi power save: %s", ps == WIFI_PS_NONE ? "none" : "enabled");
+        }
+    }
+
     ESP_LOGI(TAG, "WiFi AP started SSID:%s", ssid);
     return ESP_OK;
 }

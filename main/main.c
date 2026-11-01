@@ -93,7 +93,8 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to initialize WiFi AP: %s", esp_err_to_name(err));
     }
 
-    // Bring up the STA side (reconnects to a previously saved network).
+    // Bring up the STA side and its supervisor task, which reconnects to the
+    // saved network indefinitely (see wifi_scan.c).
     init_wifi_sta();
 
     // Start MQTT publishing once the network stack is available.

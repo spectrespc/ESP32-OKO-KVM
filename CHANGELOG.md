@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] — 2026-10-31
+
+### Fixed
+- Wi-Fi STA no longer gives up after 5 failures: reconnection is retried
+  indefinitely with an exponential 1–60 s backoff.
+- A station stuck in `connecting` because DHCP never answered now times out
+  after 25 s and reconnects instead of staying there forever.
+- `ASSOC_FAIL`, `HANDSHAKE_TIMEOUT` and `4WAY_HANDSHAKE_TIMEOUT` are no longer
+  treated as fatal.
+- WiFi link state, credentials and counters are now guarded by a mutex, so
+  concurrent HTTP requests and driver events cannot race.
+- A lost scan after a radio restart no longer leaves `/wifi/scan/results`
+  stuck on `{"status":"scanning"}`.
+
+### Changed
+- Wi-Fi modem sleep is disabled (`WIFI_PS_NONE`): in the reported log the
+  station slept 94.5 % of the time and hit `BEACON_TIMEOUT` (reason 200) at
+  −34 dBm RSSI after ~34 hours.
+- After 10 minutes of continuous failures the radio is restarted softly
+  (`esp_wifi_stop` → 200 ms → `esp_wifi_start`), at most once every 10 minutes.
+  The SoftAP is unavailable for 1–2 s; the device is not rebooted.
+- `POST /wifi/disconnect` still disables automatic reconnection until the next
+  `POST /wifi/connect`.
+
+### Added
+- Diagnostic fields in `GET /wifi/status`: `attempts`, `fail_streak`,
+  `last_disconnect_reason`, `last_disconnect_reason_name`,
+  `last_disconnect_age_s`, `next_retry_in_ms`, `radio_restarts`, `power_save`.
+- `wifi_sup` supervisor task (4096 bytes, priority 4) and corresponding web UI
+  rows for the new status fields.
+
 ## [1.4.0] — 2026-10-21
 
 ### Added

@@ -912,11 +912,24 @@ function renderWifi(){
     }
     const s = r.data || {};
     const kind = s.connected ? "ok" : (s.state === "connecting" ? "warn" : "off");
+    const lastDrop = (s.last_disconnect_reason_name &&
+                      s.last_disconnect_reason_name !== "none")
+      ? escapeHtml(s.last_disconnect_reason_name) +
+        (s.last_disconnect_age_s >= 0 ? " · " + s.last_disconnect_age_s + " s ago" : "")
+      : "—";
+    const nextRetry = (!s.connected && s.next_retry_in_ms > 0)
+      ? Math.ceil(s.next_retry_in_ms / 1000) + " s"
+      : "—";
     box.innerHTML = `
       <div class="status-row"><span>State</span>${badge(s.state || "idle", kind)}</div>
       <div class="status-row"><span>Network</span><span>${escapeHtml(s.ssid || "—")}</span></div>
       <div class="status-row"><span>IP address</span><span>${escapeHtml(s.ip || "—")}</span></div>
-      <div class="status-row"><span>Signal</span><span>${s.connected ? (signalBars(s.rssi) + " " + s.rssi + " dBm") : "—"}</span></div>`;
+      <div class="status-row"><span>Signal</span><span>${s.connected ? (signalBars(s.rssi) + " " + s.rssi + " dBm") : "—"}</span></div>
+      <div class="status-row"><span>Attempts</span><span>${s.attempts || 0}</span></div>
+      <div class="status-row"><span>Last drop</span><span>${lastDrop}</span></div>
+      <div class="status-row"><span>Next retry</span><span>${nextRetry}</span></div>
+      <div class="status-row"><span>Radio restarts</span><span>${s.radio_restarts || 0}</span></div>
+      <div class="status-row"><span>Power save</span><span>${escapeHtml(s.power_save || "unknown")}</span></div>`;
   }
 
   function renderNetworks(list, networks){
