@@ -21,13 +21,24 @@ static const char* TAG = "auth";
 #define AUTH_USER_KEY     "user"
 #define AUTH_PASS_KEY     "pass"
 #define DEFAULT_USER      "admin"
-#define DEFAULT_PASS      "admin"
+
+// There is deliberately no fixed default password: on first boot a random one
+// is generated and logged once, so a freshly flashed device cannot be taken
+// over with well-known credentials.
+#define AUTH_RANDOM_PASS_BYTES  12       // 12 random bytes -> 24 hex chars
+#define AUTH_RANDOM_PASS_BUF    (AUTH_RANDOM_PASS_BYTES * 2 + 1)
 
 #define SESSION_COOKIE_NAME  "session"
 #define SESSION_ID_HEX_LEN   32          // 16 random bytes -> 32 hex chars
 #define SESSION_ID_BUF       (SESSION_ID_HEX_LEN + 1)
 #define SESSION_USER_BUF     33          // 32 chars + NUL
 #define SESSION_COOKIE_MAX   256
+#define SESSION_TTL_S        (24 * 60 * 60)
+
+// Brute-force protection: after AUTH_MAX_FAILS consecutive bad logins the
+// endpoint is locked for AUTH_LOCKOUT_S seconds for every client.
+#define AUTH_MAX_FAILS       5
+#define AUTH_LOCKOUT_S       60
 
 #define PASS_HASH_LEN        64          // SHA-256 hex length
 
@@ -43,6 +54,10 @@ static SemaphoreHandle_t s_session_mutex = NULL;
 
 static char s_user[SESSION_USER_BUF] = DEFAULT_USER;
 static char s_pass_hash[PASS_HASH_LEN + 1] = { 0 };
+
+// Login throttle state, guarded by s_session_mutex.
+static uint32_t s_login_fails = 0;
+static uint32_t s_login_locked_until = 0;
 
 // --- helpers -----------------------------------------------------------------
 
@@ -79,6 +94,9 @@ static esp_err_t reply_auth(httpd_req_t* req, const char* status_line, bool auth
     return err;
 }
 
+// Reads at most max_len bytes of the request body into buf (NUL-terminated).
+// Returns the number of bytes read, -2 when the body is larger than buf (the
+// unread part is purged by httpd after the handler returns), or -1 on error.
 static int read_body(httpd_req_t* req, char* buf, size_t max_len)
 {
     int total = req->content_len;
@@ -86,9 +104,11 @@ static int read_body(httpd_req_t* req, char* buf, size_t max_len)
         buf[0] = '\0';
         return 0;
     }
-    if (total > (int)max_len - 1) {
-        total = (int)max_len - 1;
+    if ((size_t)total > max_len - 1) {
+        buf[0] = '\0';
+        return -2;
     }
+
     int received = 0;
     while (received < total) {
         int r = httpd_req_recv(req, buf + received, total - received);
@@ -104,6 +124,22 @@ static int read_body(httpd_req_t* req, char* buf, size_t max_len)
     return received;
 }
 
+static uint32_t uptime_s(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000000);
+}
+
+// Renders `len` bytes as lowercase hex into `out` (2 * len + 1 bytes needed).
+static void bytes_to_hex(const uint8_t* in, size_t len, char* out)
+{
+    static const char hexc[] = "0123456789abcdef";
+    for (size_t i = 0; i < len; i++) {
+        out[i * 2]     = hexc[in[i] >> 4];
+        out[i * 2 + 1] = hexc[in[i] & 0x0F];
+    }
+    out[len * 2] = '\0';
+}
+
 // SHA-256 of `in`, rendered as a 64-char lowercase hex string in `out`
 // (out must hold at least PASS_HASH_LEN + 1 bytes).
 static bool sha256_hex(const char* in, char* out)
@@ -115,13 +151,80 @@ static bool sha256_hex(const char* in, char* out)
         digest_len != sizeof(digest)) {
         return false;
     }
-    static const char hexc[] = "0123456789abcdef";
-    for (size_t i = 0; i < digest_len; i++) {
-        out[i * 2]     = hexc[digest[i] >> 4];
-        out[i * 2 + 1] = hexc[digest[i] & 0x0F];
-    }
-    out[digest_len * 2] = '\0';
+    bytes_to_hex(digest, digest_len, out);
     return true;
+}
+
+// Fills `out` (AUTH_RANDOM_PASS_BUF bytes) with a random hex password.
+static bool random_password(char* out, size_t out_len)
+{
+    if (!out || out_len < AUTH_RANDOM_PASS_BUF) {
+        return false;
+    }
+    uint8_t raw[AUTH_RANDOM_PASS_BYTES];
+    esp_fill_random(raw, sizeof(raw));
+    bytes_to_hex(raw, sizeof(raw), out);
+    return true;
+}
+
+// Length-independent string comparison (the lengths themselves are not secret
+// for the fixed-size password hash).
+static bool const_time_eq(const char* a, const char* b)
+{
+    size_t la = strlen(a);
+    size_t lb = strlen(b);
+    size_t n = la < lb ? la : lb;
+    uint8_t diff = (la == lb) ? 0 : 1;
+    for (size_t i = 0; i < n; i++) {
+        diff |= (uint8_t)((uint8_t)a[i] ^ (uint8_t)b[i]);
+    }
+    return diff == 0;
+}
+
+// --- login throttle ----------------------------------------------------------
+
+// Returns the remaining lockout in seconds (0 when not locked).
+static uint32_t login_lock_remaining(void)
+{
+    if (!s_session_mutex) {
+        return 0;
+    }
+    uint32_t now = uptime_s();
+    uint32_t left = 0;
+    xSemaphoreTake(s_session_mutex, portMAX_DELAY);
+    if (s_login_locked_until != 0 && (int32_t)(s_login_locked_until - now) > 0) {
+        left = s_login_locked_until - now;
+    }
+    xSemaphoreGive(s_session_mutex);
+    return left;
+}
+
+static void login_record_failure(void)
+{
+    if (!s_session_mutex) {
+        return;
+    }
+    xSemaphoreTake(s_session_mutex, portMAX_DELAY);
+    if (s_login_fails < AUTH_MAX_FAILS) {
+        s_login_fails++;
+    }
+    if (s_login_fails >= AUTH_MAX_FAILS) {
+        s_login_locked_until = uptime_s() + AUTH_LOCKOUT_S;
+        s_login_fails = 0;
+        ESP_LOGW(TAG, "Too many failed logins; locked for %d s", AUTH_LOCKOUT_S);
+    }
+    xSemaphoreGive(s_session_mutex);
+}
+
+static void login_record_success(void)
+{
+    if (!s_session_mutex) {
+        return;
+    }
+    xSemaphoreTake(s_session_mutex, portMAX_DELAY);
+    s_login_fails = 0;
+    s_login_locked_until = 0;
+    xSemaphoreGive(s_session_mutex);
 }
 
 // --- credentials -------------------------------------------------------------
@@ -130,9 +233,19 @@ static void load_or_create_creds(void)
 {
     nvs_handle_t h;
     if (nvs_open(AUTH_NS, NVS_READWRITE, &h) != ESP_OK) {
-        ESP_LOGE(TAG, "auth NVS unavailable; using in-RAM default credentials");
+        // Without NVS the credentials can only live in RAM. Use a fresh random
+        // password (never a well-known default) and tell the operator.
+        char pass[AUTH_RANDOM_PASS_BUF];
         strlcpy(s_user, DEFAULT_USER, sizeof(s_user));
-        sha256_hex(DEFAULT_PASS, s_pass_hash);
+        if (random_password(pass, sizeof(pass)) &&
+            sha256_hex(pass, s_pass_hash)) {
+            ESP_LOGE(TAG, "auth NVS unavailable; temporary credentials user '%s' password '%s'",
+                     s_user, pass);
+        } else {
+            s_pass_hash[0] = '\0';
+            ESP_LOGE(TAG, "auth NVS unavailable and password generation failed; "
+                          "HTTP authentication is disabled until reboot");
+        }
         return;
     }
 
@@ -149,12 +262,26 @@ static void load_or_create_creds(void)
         nvs_set_str(h, AUTH_USER_KEY, user);
     }
     if (need_pass) {
-        sha256_hex(DEFAULT_PASS, pass);
-        nvs_set_str(h, AUTH_PASS_KEY, pass);
+        char plain[AUTH_RANDOM_PASS_BUF];
+        if (!random_password(plain, sizeof(plain)) || !sha256_hex(plain, pass)) {
+            ESP_LOGE(TAG, "Failed to generate credentials; leaving auth unavailable");
+        } else {
+            nvs_set_str(h, AUTH_PASS_KEY, pass);
+            ESP_LOGW(TAG, "Created credentials: user '%s', password '%s'", user, plain);
+            ESP_LOGW(TAG, "Change the password via POST /auth/password");
+        }
     }
     if (need_user || need_pass) {
         nvs_commit(h);
-        ESP_LOGW(TAG, "Created default credentials (%s/%s)", DEFAULT_USER, DEFAULT_PASS);
+    }
+
+    // Upgraded devices may still carry the old well-known password.
+    if (!need_pass) {
+        char legacy[PASS_HASH_LEN + 1];
+        if (sha256_hex("admin", legacy) && const_time_eq(pass, legacy)) {
+            ESP_LOGE(TAG, "Insecure default password is still active; "
+                          "change it via POST /auth/password");
+        }
     }
 
     strlcpy(s_user, user, sizeof(s_user));
@@ -183,22 +310,24 @@ static bool session_create(const char* user, char* id_out)
     uint8_t raw[16];
     esp_fill_random(raw, sizeof(raw));
     char id[SESSION_ID_BUF];
-    static const char hexc[] = "0123456789abcdef";
-    for (size_t i = 0; i < sizeof(raw); i++) {
-        id[i * 2]     = hexc[raw[i] >> 4];
-        id[i * 2 + 1] = hexc[raw[i] & 0x0F];
-    }
-    id[SESSION_ID_HEX_LEN] = '\0';
+    bytes_to_hex(raw, sizeof(raw), id);
 
     bool ok = false;
     if (s_session_mutex) {
+        uint32_t now = uptime_s();
         xSemaphoreTake(s_session_mutex, portMAX_DELAY);
         for (int i = 0; i < AUTH_MAX_SESSIONS; i++) {
+            // Reclaim expired slots before allocating a new one.
+            if (s_sessions[i].active && now - s_sessions[i].created >= SESSION_TTL_S) {
+                s_sessions[i].active = false;
+                s_sessions[i].id[0] = '\0';
+                s_sessions[i].user[0] = '\0';
+            }
             if (!s_sessions[i].active) {
                 s_sessions[i].active = true;
                 strlcpy(s_sessions[i].id, id, sizeof(s_sessions[i].id));
                 strlcpy(s_sessions[i].user, user, sizeof(s_sessions[i].user));
-                s_sessions[i].created = (uint32_t)(esp_timer_get_time() / 1000000);
+                s_sessions[i].created = now;
                 ok = true;
                 break;
             }
@@ -217,9 +346,19 @@ static bool session_lookup(const char* id, char* user_out, size_t user_len)
         return false;
     }
     bool found = false;
+    uint32_t now = uptime_s();
     xSemaphoreTake(s_session_mutex, portMAX_DELAY);
     for (int i = 0; i < AUTH_MAX_SESSIONS; i++) {
-        if (s_sessions[i].active && strcmp(s_sessions[i].id, id) == 0) {
+        if (!s_sessions[i].active) {
+            continue;
+        }
+        if (now - s_sessions[i].created >= SESSION_TTL_S) {
+            s_sessions[i].active = false;
+            s_sessions[i].id[0] = '\0';
+            s_sessions[i].user[0] = '\0';
+            continue;
+        }
+        if (const_time_eq(s_sessions[i].id, id)) {
             if (user_out && user_len) {
                 strlcpy(user_out, s_sessions[i].user, user_len);
             }
@@ -238,7 +377,7 @@ static void session_remove(const char* id)
     }
     xSemaphoreTake(s_session_mutex, portMAX_DELAY);
     for (int i = 0; i < AUTH_MAX_SESSIONS; i++) {
-        if (s_sessions[i].active && strcmp(s_sessions[i].id, id) == 0) {
+        if (s_sessions[i].active && const_time_eq(s_sessions[i].id, id)) {
             s_sessions[i].active = false;
             s_sessions[i].id[0] = '\0';
             s_sessions[i].user[0] = '\0';
@@ -403,6 +542,15 @@ bool auth_check(httpd_req_t* req)
 
 esp_err_t handle_auth_login(httpd_req_t* req)
 {
+    uint32_t lock_left = login_lock_remaining();
+    if (lock_left > 0) {
+        char retry[16];
+        snprintf(retry, sizeof(retry), "%u", (unsigned)lock_left);
+        httpd_resp_set_hdr(req, "Retry-After", retry);
+        return reply_json(req, "429 Too Many Requests",
+                          "{\"error\":\"Too many failed attempts, try again later\"}");
+    }
+
     char body[256];
     if (read_body(req, body, sizeof(body)) < 0) {
         return reply_json(req, "400 Bad Request", "{\"error\":\"Failed to read request body\"}");
@@ -420,7 +568,11 @@ esp_err_t handle_auth_login(httpd_req_t* req)
     if (have) {
         char hash[PASS_HASH_LEN + 1];
         if (sha256_hex(p->valuestring, hash)) {
-            ok = (strcmp(u->valuestring, s_user) == 0 && strcmp(hash, s_pass_hash) == 0);
+            // Evaluate both comparisons so a wrong username cannot be
+            // distinguished from a wrong password by response timing.
+            bool user_ok = const_time_eq(u->valuestring, s_user);
+            bool pass_ok = const_time_eq(hash, s_pass_hash);
+            ok = user_ok & pass_ok;
         }
     }
     cJSON_Delete(root);
@@ -430,8 +582,10 @@ esp_err_t handle_auth_login(httpd_req_t* req)
                           "{\"error\":\"Missing username or password\"}");
     }
     if (!ok) {
+        login_record_failure();
         return reply_auth(req, "401 Unauthorized", false, NULL, "Invalid credentials");
     }
+    login_record_success();
 
     char id[SESSION_ID_BUF];
     if (!session_create(s_user, id)) {
@@ -439,9 +593,13 @@ esp_err_t handle_auth_login(httpd_req_t* req)
                           "{\"error\":\"Too many active sessions\",\"max\":3}");
     }
 
-    char cookie[128];
-    snprintf(cookie, sizeof(cookie), "%s=%s; Path=/; HttpOnly; SameSite=Lax",
-             SESSION_COOKIE_NAME, id);
+    char cookie[160];
+    // The device serves plain HTTP only, so the Secure attribute cannot be used
+    // without making the session cookie unusable. SameSite=Strict plus the
+    // HttpOnly flag block the practical CSRF/scripting vectors.
+    snprintf(cookie, sizeof(cookie),
+             "%s=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%d",
+             SESSION_COOKIE_NAME, id, SESSION_TTL_S);
     httpd_resp_set_hdr(req, "Set-Cookie", cookie);
     return reply_auth(req, "200 OK", true, s_user, NULL);
 }
@@ -453,7 +611,7 @@ esp_err_t handle_auth_logout(httpd_req_t* req)
         session_remove(id);
     }
     httpd_resp_set_hdr(req, "Set-Cookie",
-                       SESSION_COOKIE_NAME "=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+                       SESSION_COOKIE_NAME "=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
     return reply_auth(req, "200 OK", false, NULL, NULL);
 }
 
@@ -503,7 +661,7 @@ esp_err_t handle_auth_password(httpd_req_t* req)
     }
 
     char cur_hash[PASS_HASH_LEN + 1];
-    if (!sha256_hex(current, cur_hash) || strcmp(cur_hash, s_pass_hash) != 0) {
+    if (!sha256_hex(current, cur_hash) || !const_time_eq(cur_hash, s_pass_hash)) {
         cJSON_Delete(root);
         return reply_json(req, "403 Forbidden", "{\"error\":\"Invalid current password\"}");
     }

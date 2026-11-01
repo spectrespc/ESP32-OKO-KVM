@@ -448,13 +448,22 @@ SHT21 и устройства INA делят адрес `0x40` по умолча
 
 ### Учётные данные по умолчанию
 
-| Интерфейс | Логин           | Пароль       |
-|-----------|-----------------|--------------|
-| Web UI    | `admin`         | `admin`      |
-| WiFi AP   | `ESP32-Gateway` | `gateway123` |
+| Интерфейс | Логин           | Пароль                                   |
+|-----------|-----------------|------------------------------------------|
+| Web UI    | `admin`         | случайный, печатается в журнал при первом старте |
+| WiFi AP   | `ESP32-Gateway` | `gateway123`                             |
 
 Web-креды хранятся в NVS (пространство имён `auth`, пароль — SHA-256) и
 меняются на вкладке **Account**. Смена кредов завершает все активные сессии.
+Фиксированного пароля `admin` больше нет: при первой загрузке (или если хеш
+пароля отсутствует в NVS) генерируется случайный 24-символьный пароль и один
+раз выводится в консоль USB Serial/JTAG (`Created credentials: user 'admin',
+password '...'`). Если на устройстве остался старый пароль `admin`, в журнале
+появится предупреждение — смените его через **Account** или
+`POST /auth/password`.
+
+Сессия живёт 24 часа, cookie помечена `HttpOnly` и `SameSite=Strict`; после
+5 неудачных попыток входа `/auth/login` блокируется на 60 секунд.
 
 ## Веб-интерфейс
 
@@ -462,16 +471,17 @@ SPA — это единый самодостаточный файл `web/index.h
 встраиваемый в раздел SPIFFS на этапе сборки и отдаваемый обработчиком
 статики HTTP-сервера. Откройте **http://192.168.4.1** после подключения к AP.
 Доступны вкладки Dashboard, Configuration, WiFi, Sensors, SD Card, Files,
-Update, External, System Log и Account. Вход — `admin` / `admin`. Вкладка
+Update, External, System Log и Account. Вход — `admin` и пароль,
+сгенерированный при первой загрузке (см. журнал). Вкладка
 Configuration строит выпадающие списки GPIO на клиенте из таблицы пинов
 ESP32-C6 и отключает пины, уже назначенные другой роли.
 
 ## OTA-обновления
 
-Начиная с версии **1.4.0** прошивка обновляется по сети (HTTP) без USB. Схема
-A/B: разделы `factory` и `ota_0` по 1.625 МБ; новый образ пишется в свободный
-слот, проверяется по SHA-256 и выбирается загрузочным. Если после загрузки
-self-test не проходит, bootloader возвращается к предыдущему слоту.
+Начиная с версии **1.4.0** прошивка обновляется по сети (HTTP или HTTPS) без
+USB. Схема A/B: разделы `factory` и `ota_0` по 1.625 МБ; новый образ пишется в
+свободный слот, проверяется по SHA-256 и выбирается загрузочным. Если после
+загрузки self-test не проходит, bootloader возвращается к предыдущему слоту.
 
 ### Сервер обновлений
 
@@ -504,9 +514,11 @@ SHA-256 считается автоматически (или задаётся �
 3. **Install update** (`POST /ota/update`) — скачивание, проверка SHA-256,
    перезагрузка в новый слот. Прогресс/результат видны в `GET /ota/status`.
 
-`sha256` обязателен: TLS не используется, поэтому целостность образа — основная
-защита в локальной сети. HTTPS, anti-rollback и автоматическая установка не
-поддерживаются.
+`sha256` обязателен и защищает от повреждения образа. При `https://` сертификат
+сервера проверяется по встроенному CA-набору mbedTLS, а автоматические
+редиректы запрещены. При `http://` SHA-256 приходит по тому же незащищённому
+каналу и не спасает от MITM — используйте HTTP только в доверенной локальной
+сети, а для продакшена задавайте `https://`.
 
 ### Версия прошивки
 
@@ -1030,14 +1042,21 @@ rejects a configuration where:
 
 ### Default Credentials
 
-| Interface | Username        | Password     |
-|-----------|-----------------|--------------|
-| Web UI    | `admin`         | `admin`      |
-| WiFi AP   | `ESP32-Gateway` | `gateway123` |
+| Interface | Username        | Password                                      |
+|-----------|-----------------|-----------------------------------------------|
+| Web UI    | `admin`         | random, printed to the log on first boot      |
+| WiFi AP   | `ESP32-Gateway` | `gateway123`                                  |
 
 Web credentials are stored in NVS (namespace `auth`, password as a SHA-256
 digest) and can be changed on the **Account** tab. Changing them ends every
-active session.
+active session. There is no fixed `admin` password: on first boot (or when the
+password hash is missing from NVS) a random 24-character password is generated
+and logged once on the USB Serial/JTAG console (`Created credentials: user
+'admin', password '...'`). A device that still has the old `admin` password logs
+a warning — change it via **Account** or `POST /auth/password`.
+
+Sessions expire after 24 hours; the cookie is `HttpOnly` and `SameSite=Strict`.
+After 5 failed logins `/auth/login` is locked for 60 seconds.
 
 ## Web Interface
 
@@ -1045,16 +1064,17 @@ The SPA is a single self-contained `web/index.html` (inline CSS + JS) baked into
 the SPIFFS partition at build time and served by the HTTP server's catch-all
 handler. Open **http://192.168.4.1** after joining the AP. It has Dashboard,
 Configuration, WiFi, Sensors, SD Card, Files, Update, External, System Log and
-Account tabs. Sign in with `admin` / `admin`. The Configuration tab renders GPIO
+Account tabs. Sign in with `admin` and the password generated on first boot
+(see the log). The Configuration tab renders GPIO
 dropdowns client-side from the ESP32-C6 pin table and disables pins already
 assigned to another role.
 
 ## OTA Updates
 
-From version **1.4.0** the firmware updates over the network (HTTP) without USB.
-The A/B layout uses `factory` and `ota_0` (1.625 MB each): the new image is
-written to the idle slot, verified by SHA-256 and selected for boot. If the
-post-boot self-test fails, the bootloader returns to the previous slot.
+From version **1.4.0** the firmware updates over the network (HTTP or HTTPS)
+without USB. The A/B layout uses `factory` and `ota_0` (1.625 MB each): the new
+image is written to the idle slot, verified by SHA-256 and selected for boot. If
+the post-boot self-test fails, the bootloader returns to the previous slot.
 
 ### Update server
 
@@ -1087,9 +1107,11 @@ strictly greater than the running one.
 3. **Install update** (`POST /ota/update`) downloads, verifies SHA-256 and
    reboots into the new slot. Progress/result appear in `GET /ota/status`.
 
-`sha256` is mandatory: TLS is not used, so image integrity is the primary
-protection on a local network. HTTPS, anti-rollback and automatic installation
-are out of scope.
+`sha256` is mandatory and protects against a corrupted image. With `https://`
+the server certificate is verified against the bundled mbedTLS CA store and
+automatic redirects are disabled. With `http://` the SHA-256 arrives over the
+same unauthenticated channel and cannot stop a MITM — use HTTP only on a trusted
+local network and configure `https://` for production.
 
 ### Firmware version
 

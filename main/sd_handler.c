@@ -113,8 +113,11 @@ static int sd_write_impl(const char* filename, const uint8_t* data, size_t len, 
         return -1;
     }
 
-    char full_path[256];
-    snprintf(full_path, sizeof(full_path), "/sdcard/%s", filename);
+    char full_path[SD_FULL_PATH_MAX];
+    if (!sd_resolve_path(filename, full_path, sizeof(full_path))) {
+        ESP_LOGE(TAG, "Refusing invalid SD path: %s", filename);
+        return -1;
+    }
 
     FILE* file = fopen(full_path, "ab");
     if (!file) {
@@ -152,8 +155,11 @@ int sd_write_rotate(const char* filename, const uint8_t* data, size_t len)
         return -1;
     }
 
-    char full[256];
-    snprintf(full, sizeof(full), "/sdcard/%s", filename);
+    char full[SD_FULL_PATH_MAX];
+    if (!sd_resolve_path(filename, full, sizeof(full))) {
+        ESP_LOGE(TAG, "sd_write_rotate: invalid path %s", filename);
+        return -1;
+    }
 
     // Rotate before appending when this write would push the file past the cap.
     struct stat st;
@@ -166,10 +172,15 @@ int sd_write_rotate(const char* filename, const uint8_t* data, size_t len)
         // remove. A rename that fails for any other reason aborts the rotation
         // so the file cannot grow past the cap and history is not silently lost.
         for (int i = LOG_ROTATE_DEPTH - 1; i >= 1 && rot_ok; i--) {
-            char src[288];
-            char dst[288];
-            snprintf(src, sizeof(src), "/sdcard/%s.%d", filename, i);
-            snprintf(dst, sizeof(dst), "/sdcard/%s.%d", filename, i + 1);
+            char src[SD_FULL_PATH_MAX + 8];
+            char dst[SD_FULL_PATH_MAX + 8];
+            int sl = snprintf(src, sizeof(src), "%s.%d", full, i);
+            int dl = snprintf(dst, sizeof(dst), "%s.%d", full, i + 1);
+            if (sl < 0 || (size_t)sl >= sizeof(src) ||
+                dl < 0 || (size_t)dl >= sizeof(dst)) {
+                rot_ok = false;
+                break;
+            }
             if (unlink(dst) != 0 && errno != ENOENT) {
                 rot_ok = false;
                 break;
@@ -181,9 +192,11 @@ int sd_write_rotate(const char* filename, const uint8_t* data, size_t len)
 
         // Move the current file out of the way.
         if (rot_ok) {
-            char bak[288];
-            snprintf(bak, sizeof(bak), "/sdcard/%s.1", filename);
-            if (unlink(bak) != 0 && errno != ENOENT) {
+            char bak[SD_FULL_PATH_MAX + 8];
+            int bl = snprintf(bak, sizeof(bak), "%s.1", full);
+            if (bl < 0 || (size_t)bl >= sizeof(bak)) {
+                rot_ok = false;
+            } else if (unlink(bak) != 0 && errno != ENOENT) {
                 rot_ok = false;
             } else if (rename(full, bak) != 0) {
                 rot_ok = false;
@@ -218,8 +231,11 @@ int sd_read_data(const char* filename, uint8_t* buffer, size_t buffer_size)
         return -1;
     }
 
-    char full_path[256];
-    snprintf(full_path, sizeof(full_path), "/sdcard/%s", filename);
+    char full_path[SD_FULL_PATH_MAX];
+    if (!sd_resolve_path(filename, full_path, sizeof(full_path))) {
+        ESP_LOGE(TAG, "Refusing invalid SD path: %s", filename);
+        return -1;
+    }
 
     FILE* file = fopen(full_path, "rb");
     if (!file) {
@@ -234,9 +250,11 @@ int sd_read_data(const char* filename, uint8_t* buffer, size_t buffer_size)
     return (int)read;
 }
 
-// Normalizes a caller-supplied relative path: strips leading/trailing slashes,
-// treats "." as the root and rejects traversal, backslashes and control bytes.
-// The result is a relative path without a leading slash ("" means the root).
+// Normalizes a caller-supplied relative path: strips leading/trailing slashes
+// and treats "." as the root. Every remaining component is checked against
+// traversal: empty components ("//"), "." / "..", backslashes, control bytes
+// and ':' (drive/stream designators) are rejected. The result is a relative
+// path without a leading slash ("" means the root).
 static bool sd_normalize_rel(const char* rel, char* out, size_t out_len)
 {
     if (!rel) {
@@ -258,12 +276,29 @@ static bool sd_normalize_rel(const char* rel, char* out, size_t out_len)
     if (strcmp(out, ".") == 0) {
         out[0] = '\0';
     }
-    if (strstr(out, "..") || strchr(out, '\\')) {
-        return false;
-    }
-    for (const unsigned char* p = (const unsigned char*)out; *p; p++) {
-        if (*p < 0x20) {
-            return false;
+
+    const char* p = out;
+    while (*p) {
+        const char* slash = strchr(p, '/');
+        size_t clen = slash ? (size_t)(slash - p) : strlen(p);
+        if (clen == 0) {
+            return false;                       // "a//b"
+        }
+        if (clen == 1 && p[0] == '.') {
+            return false;                       // "./"
+        }
+        if (clen == 2 && p[0] == '.' && p[1] == '.') {
+            return false;                       // ".."
+        }
+        for (size_t i = 0; i < clen; i++) {
+            unsigned char c = (unsigned char)p[i];
+            if (c < 0x20 || c == 0x7F || c == '\\' || c == ':') {
+                return false;
+            }
+        }
+        p += clen;
+        if (*p == '/') {
+            p++;
         }
     }
     return true;
@@ -353,7 +388,7 @@ int sd_list_dir(const char* rel, char** json_out)
                 continue;
             }
             // Names the listing helpers would reject must not be advertised.
-            if (strstr(ent->d_name, "..") || strchr(ent->d_name, '\\')) {
+            if (!sd_rel_path_valid(ent->d_name)) {
                 continue;
             }
 

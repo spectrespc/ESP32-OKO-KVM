@@ -28,6 +28,7 @@ static esp_err_t reply_json(httpd_req_t *req, const char* status_line, const cha
 {
     httpd_resp_set_status(req, status_line);
     httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
     return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
 }
 
@@ -38,7 +39,8 @@ static esp_err_t reject_unauthorized(httpd_req_t *req)
 }
 
 // Reads at most max_len bytes of the request body into buf (NUL-terminated).
-// Returns the number of bytes read, or -1 on error.
+// Returns the number of bytes read, -2 when the body is larger than buf (the
+// unread part is purged by httpd after the handler returns), or -1 on error.
 static int read_body(httpd_req_t *req, char* buf, size_t max_len)
 {
     int total = req->content_len;
@@ -46,8 +48,9 @@ static int read_body(httpd_req_t *req, char* buf, size_t max_len)
         buf[0] = '\0';
         return 0;
     }
-    if (total > (int)max_len - 1) {
-        total = (int)max_len - 1;
+    if ((size_t)total > max_len - 1) {
+        buf[0] = '\0';
+        return -2;
     }
 
     int received = 0;
@@ -270,6 +273,10 @@ static esp_err_t handle_post_config(httpd_req_t *req)
     if (!auth_check(req)) {
         return reject_unauthorized(req);
     }
+    if (!request_is_same_origin(req)) {
+        return reply_json(req, "403 Forbidden",
+                          "{\"error\":\"Cross-origin request rejected\"}");
+    }
     char body[4096];
     int received = read_body(req, body, sizeof(body));
     if (received < 0) {
@@ -450,6 +457,10 @@ static esp_err_t handle_post_sd_write(httpd_req_t *req)
     if (!auth_check(req)) {
         return reject_unauthorized(req);
     }
+    if (!request_is_same_origin(req)) {
+        return reply_json(req, "403 Forbidden",
+                          "{\"error\":\"Cross-origin request rejected\"}");
+    }
     const app_config_t* cfg = get_config();
     if (!cfg->sd_enable || get_sd_status() != SD_STATUS_READY) {
         return reply_json(req, "503 Service Unavailable", "{\"error\":\"SD disabled\"}");
@@ -457,6 +468,10 @@ static esp_err_t handle_post_sd_write(httpd_req_t *req)
 
     char body[512];
     int received = read_body(req, body, sizeof(body));
+    if (received == -2) {
+        return reply_json(req, "413 Payload Too Large",
+                          "{\"error\":\"Body exceeds 511 bytes\"}");
+    }
     if (received <= 0) {
         return reply_json(req, "400 Bad Request", "{\"error\":\"Empty body\"}");
     }

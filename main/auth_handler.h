@@ -8,9 +8,10 @@
 // Maximum number of concurrent sessions held in RAM (lost on reboot).
 #define AUTH_MAX_SESSIONS 3
 
-// Loads the credentials from the "auth" NVS namespace, creating the default
-// admin/admin pair (password stored as a SHA-256 hex digest) on first boot.
-// Call once before init_http_server().
+// Loads the credentials from the "auth" NVS namespace. On first boot a random
+// password is generated (never a well-known default) and logged once; the
+// password is stored as a SHA-256 hex digest. Call once before
+// init_http_server().
 void auth_init(void);
 
 // Returns true when the request carries a valid session cookie, or when it

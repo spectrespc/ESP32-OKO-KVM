@@ -94,12 +94,15 @@ provided`, `Numeric value out of range`, `String too long (...)`.
 ```bash
 curl -c cookies.txt -X POST http://192.168.4.1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"admin"}'
+  -d '{"username":"admin","password":"<пароль из журнала>"}'
 curl -b cookies.txt http://192.168.4.1/config
 ```
 
-Сессии хранятся в RAM и завершаются при перезагрузке. Запросы с IP-адресов
-самого устройства (on-boot self-test) считаются доверенными.
+Пароль по умолчанию не фиксирован: при первой загрузке генерируется случайный
+24-символьный пароль и один раз выводится в консоль USB Serial/JTAG. Сессии
+живут 24 часа, cookie помечена `HttpOnly` и `SameSite=Strict`, после 5 неудачных
+попыток вход блокируется на 60 секунд (`429` + `Retry-After`). Запросы с
+IP-адресов самого устройства (on-boot self-test) считаются доверенными.
 
 ## `GET /config`
 
@@ -373,10 +376,16 @@ curl -b cookies.txt -OJ http://192.168.4.1/config/export
 
 ## OTA-обновление
 
-Обновления раздаются по обычному HTTP. Настройки: `ota_enable`, `ota_url`,
+Обновления раздаются по HTTP или HTTPS (`ota_url` обязан начинаться с
+`http://` или `https://`). Настройки: `ota_enable`, `ota_url`,
 `ota_check_interval_min` (см. `POST /config`). Периодическая проверка только
 сообщает о доступной версии; установка выполняется вручную через
 `POST /ota/update`.
+
+При `https://` сертификат сервера проверяется по встроенному CA-набору mbedTLS,
+автоматические редиректы запрещены. При `http://` SHA-256 манифеста и образа
+передаётся по тому же незащищённому каналу и не защищает от MITM — такой режим
+допустим только в доверенной локальной сети.
 
 Сервер обновлений должен отдавать манифест `GET {ota_url}/version.json`:
 

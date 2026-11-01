@@ -5,6 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- First boot no longer creates the well-known `admin`/`admin` account: a random
+  24-character password is generated and logged once on the USB Serial/JTAG
+  console. Devices that still use the old default get a warning in the log.
+- `/auth/login` is rate-limited (5 failed attempts → 60 s lockout with
+  `Retry-After`); usernames and password hashes are compared in constant time.
+- Sessions expire after 24 hours; the cookie is `SameSite=Strict` and carries
+  `Max-Age`. `Secure` is intentionally not set because the device serves plain
+  HTTP and the cookie would never be sent back.
+- `POST /config` and `POST /sd/write` reject cross-origin browser requests.
+- Request bodies larger than the handler buffer are rejected instead of being
+  silently truncated (`413` on `POST /sd/write`); httpd purges the unread
+  remainder when the handler returns.
+- SD path validation is now component-based: `.`/`..`, empty components, `\`,
+  `:` and control bytes are rejected. SD write/read/rotate resolve paths through
+  the same validator instead of concatenating `"/sdcard/%s"`.
+- `ota_url` must be an absolute `http://` or `https://` URL without userinfo,
+  whitespace or control characters. HTTPS requests verify the server against the
+  bundled CA store, and automatic redirects are disabled (no https→http
+  downgrade).
+
+### Added
+- `X-Content-Type-Options: nosniff` on JSON responses from the REST API.
+
 ## [1.4.1] — 2026-10-31
 
 ### Fixed

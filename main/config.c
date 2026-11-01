@@ -253,6 +253,39 @@ void set_config(app_config_t* config)
     save_config();
 }
 
+// Validates the OTA base URL used to build the manifest and image requests.
+// Accepts only absolute http:// or https:// URLs with a non-empty host and no
+// whitespace, control bytes, userinfo or shell/JSON-hostile characters.
+static bool ota_url_valid(const char* url)
+{
+    if (!url || url[0] == '\0') {
+        return true; // empty means OTA is not configured
+    }
+    const char* rest = NULL;
+    if (strncmp(url, "https://", 8) == 0) {
+        rest = url + 8;
+    } else if (strncmp(url, "http://", 7) == 0) {
+        rest = url + 7;
+    } else {
+        return false;
+    }
+    if (rest[0] == '\0' || rest[0] == '/' || rest[0] == '?' || rest[0] == '#') {
+        return false;
+    }
+    size_t authority_len = strcspn(rest, "/?#");
+    if (authority_len == 0 || memchr(rest, '@', authority_len) != NULL) {
+        return false; // credentials are never needed and must not be embedded
+    }
+    for (const char* p = url; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c <= 0x20 || c == 0x7F || c == '"' || c == '\\' ||
+            c == '\'' || c == '<' || c == '>') {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool config_validate_and_set(app_config_t* candidate, char* err_buf, size_t err_buf_len)
 {
     if (!candidate) {
@@ -397,6 +430,13 @@ bool config_validate_and_set(app_config_t* candidate, char* err_buf, size_t err_
     if (candidate->ota_url && strlen(candidate->ota_url) > 255) {
         if (err_buf && err_buf_len) {
             snprintf(err_buf, err_buf_len, "OTA_INVALID: ota_url must be <=255 characters");
+        }
+        return false;
+    }
+    if (!ota_url_valid(candidate->ota_url)) {
+        if (err_buf && err_buf_len) {
+            snprintf(err_buf, err_buf_len,
+                     "OTA_INVALID: ota_url must be an absolute http:// or https:// URL");
         }
         return false;
     }

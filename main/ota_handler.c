@@ -17,6 +17,10 @@
 #include "esp_app_desc.h"
 #include "esp_http_client.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
+#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+#include "esp_crt_bundle.h"
+#endif
 #include "cJSON.h"
 #include "psa/crypto.h"
 #include "freertos/FreeRTOS.h"
@@ -94,6 +98,11 @@ static void mark_checked(const char* result)
     snprintf(s_last_result, sizeof(s_last_result), "%s", result ? result : "");
     s_last_check_s = uptime_s();
     portEXIT_CRITICAL(&s_lock);
+}
+
+static bool url_is_https(const char* url)
+{
+    return url && strncmp(url, "https://", 8) == 0;
 }
 
 // Joins a base URL and a relative name, tolerating trailing slashes in base.
@@ -211,12 +220,26 @@ static esp_err_t fetch_manifest(ota_manifest_t* m)
         ESP_LOGE(TAG, "OTA URL too long");
         return ESP_ERR_INVALID_ARG;
     }
+    // Reject anything that is not an absolute http(s) URL, even if a stale NVS
+    // value predates the config-level validation.
+    if (!url_is_https(url) && strncmp(url, "http://", 7) != 0) {
+        ESP_LOGE(TAG, "OTA URL must start with http:// or https://");
+        return ESP_ERR_INVALID_ARG;
+    }
 
     esp_http_client_config_t http_cfg = {
         .url = url,
         .timeout_ms = 15000,
         .buffer_size = 1024,
         .buffer_size_tx = 256,
+        // Never follow redirects: a redirect could downgrade an https URL to
+        // plain http and bypass transport authentication.
+        .disable_auto_redirect = true,
+#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+        // Verify the server certificate against the bundled CA store for
+        // https:// URLs (ignored for plain http).
+        .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
     };
     esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
     if (!client) {
@@ -359,6 +382,10 @@ static esp_err_t download_and_apply(const ota_manifest_t* m)
         ESP_LOGE(TAG, "Image URL too long");
         return ESP_ERR_INVALID_ARG;
     }
+    if (!url_is_https(url)) {
+        ESP_LOGW(TAG, "Image is fetched over plain HTTP; SHA-256 cannot stop a "
+                      "man-in-the-middle from replacing it (use an https:// ota_url)");
+    }
 
     const esp_partition_t* update = esp_ota_get_next_update_partition(NULL);
     if (!update) {
@@ -373,6 +400,10 @@ static esp_err_t download_and_apply(const ota_manifest_t* m)
         .timeout_ms = 20000,
         .buffer_size = OTA_DL_BUF_SIZE,
         .buffer_size_tx = 256,
+        .disable_auto_redirect = true,
+#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+        .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
     };
     esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
     if (!client) {
@@ -639,6 +670,10 @@ void init_ota(void)
     ESP_LOGI(TAG, "OTA ready (periodic checks %s, interval %u min)",
              cfg->ota_enable ? "enabled" : "disabled",
              (unsigned)cfg->ota_check_interval_min);
+    if (cfg->ota_url && cfg->ota_url[0] && !url_is_https(cfg->ota_url)) {
+        ESP_LOGW(TAG, "OTA URL uses plain HTTP; configure https:// so updates are "
+                      "authenticated by TLS");
+    }
 }
 
 void ota_trigger_check(void)
