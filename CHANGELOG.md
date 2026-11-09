@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.3] — 2026-11-09
+
+### Fixed
+- OTA updates can be installed repeatedly: the partition table now uses two
+  equal OTA slots (`ota_0` + `ota_1`) instead of `factory` + `ota_0`. With the
+  old layout a device booted from `ota_0` failed with
+  `ESP_ERR_OTA_PARTITION_CONFLICT`. Such devices must be reflashed once over USB
+  (`./build_and_flash.sh flash`); NVS settings survive.
+- Typed characters no longer appear twice in `telnet <gateway> <port>` sessions.
+  The bridges now perform a minimal Telnet handshake (`WILL ECHO` / `WILL SGA`),
+  strip IAC sequences from the client stream and double `0xFF` in the
+  UART→client stream. Raw TCP clients such as `nc` see the 6 welcome bytes and
+  doubled `0xFF` in binary traffic.
+
+## [1.4.2] — 2026-11-09
+
 ### Security
 - First boot no longer creates the well-known `admin`/`admin` account: a random
   24-character password is generated and logged once on the USB Serial/JTAG
@@ -30,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `X-Content-Type-Options: nosniff` on JSON responses from the REST API.
+
+### Changed
+- Telnet bridges now listen on all interfaces (`0.0.0.0`) instead of only the
+  SoftAP address, so they are reachable from the LAN through the STA IP as well
+  as from the SoftAP. Single-client relay behaviour, `SO_SNDTIMEO` and the 5 s
+  bind retry interval are unchanged. The bridge no longer waits for the SoftAP
+  to obtain an IP address.
 
 ## [1.4.1] — 2026-10-31
 

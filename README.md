@@ -38,7 +38,7 @@
   (SD-карта не требуется), с вкладками Dashboard, Configuration, WiFi, Sensors,
   SD Card, Files, Update, External, System Log и Account. Доступ защищён
   cookie-сессией (по умолчанию `admin` / `admin`).
-- **OTA-обновления** по A/B-схеме (`factory` + `ota_0`): манифест
+- **OTA-обновления** по A/B-схеме (`ota_0` + `ota_1`): манифест
   `version.json`, проверка SHA-256, установка вручную, откат bootloader'ом при
   неподтверждённом образе. Сервер раздачи — `tools/ota_server.py`.
 - **Файловый менеджер SD** — просмотр каталогов и скачивание файлов через
@@ -49,7 +49,12 @@
 - **Постоянная конфигурация** в NVS с семантикой частичного обновления.
 - **Переназначение GPIO на лету** с проверкой возможностей пина и конфликтов.
 - **Двойные telnet-мосты**, ретранслирующие TCP в UART0 и UART1, каждый на
-  собственном порту.
+  собственном порту. Мосты выполняют минимальный Telnet-handshake (`WILL ECHO` /
+  `WILL SGA`), вырезают IAC-последовательности клиента и удваивают `0xFF` в
+  потоке UART→клиент, поэтому `telnet` не даёт двойного эха. Сырые TCP-клиенты
+  (`nc`) увидят 6 приветственных байт. Мосты слушают `0.0.0.0`, то есть
+  доступны и из SoftAP, и из LAN; аутентификации нет, поэтому не выставляйте их
+  порты в интернет.
 - **Опциональное логирование на SD-карту**: трафик UART (`uar0.log` / `uar1.log`)
   и показания датчиков (`sht21.csv` / `ina219.csv` / `ina226.csv` / `env.csv`) с
   ротацией по 1 МБ на FatFs с поддержкой exFAT.
@@ -124,7 +129,7 @@ idf.py -p /dev/ttyACM0 monitor
 ```
 gateway/
 ├── CMakeLists.txt          # Определение проекта верхнего уровня
-├── partitions.csv          # Пользовательская раскладка 4 МБ (factory 1.625M + ota_0 1.625M + 640K SPIFFS)
+├── partitions.csv          # Пользовательская раскладка 4 МБ (ota_0 1.625M + ota_1 1.625M + 640K SPIFFS)
 ├── sdkconfig.defaults      # Значения SDK по умолчанию (target, console, SPIFFS, ...)
 ├── build_and_flash.sh      # Канонический скрипт build/flash/monitor/test
 ├── main/
@@ -479,9 +484,10 @@ ESP32-C6 и отключает пины, уже назначенные друг�
 ## OTA-обновления
 
 Начиная с версии **1.4.0** прошивка обновляется по сети (HTTP или HTTPS) без
-USB. Схема A/B: разделы `factory` и `ota_0` по 1.625 МБ; новый образ пишется в
-свободный слот, проверяется по SHA-256 и выбирается загрузочным. Если после
-загрузки self-test не проходит, bootloader возвращается к предыдущему слоту.
+USB. Схема A/B: разделы `ota_0` и `ota_1` по 1.625 МБ; новый образ пишется в
+свободный (не текущий) слот, проверяется по SHA-256 и выбирается загрузочным.
+Если после загрузки self-test не проходит, bootloader возвращается к
+предыдущему слоту.
 
 ### Сервер обновлений
 
@@ -490,15 +496,15 @@ USB. Схема A/B: разделы `factory` и `ota_0` по 1.625 МБ; нов
 
 ```bash
 mkdir -p firmware
-cp build/gateway.bin firmware/gateway-1.4.1.bin
+cp build/gateway.bin firmware/gateway-1.4.3.bin
 python3 tools/ota_server.py --root ./firmware \
-    --version 1.4.1 --filename gateway-1.4.1.bin --bind 0.0.0.0 --port 8000
+    --version 1.4.3 --filename gateway-1.4.3.bin --bind 0.0.0.0 --port 8000
 ```
 
 Манифест:
 
 ```json
-{"version":"1.4.1","filename":"gateway-1.4.1.bin","sha256":"<64 hex>"}
+{"version":"1.4.3","filename":"gateway-1.4.3.bin","sha256":"<64 hex>"}
 ```
 
 SHA-256 считается автоматически (или задаётся через `--sha256`). Сервер не
@@ -522,7 +528,7 @@ SHA-256 считается автоматически (или задаётся �
 
 ### Версия прошивки
 
-Источник версии — `project(gateway VERSION 1.4.1)` в корневом `CMakeLists.txt`
+Источник версии — `project(gateway VERSION 1.4.3)` в корневом `CMakeLists.txt`
 (синхронно с `CHANGELOG.md`). Не создавайте файл `version.txt`: он имеет
 приоритет над `VERSION`.
 
@@ -531,7 +537,29 @@ SHA-256 считается автоматически (или задаётся �
 Переход со старой раскладки (2.5 МБ `factory` + 1.375 МБ SPIFFS) выполняется
 обычным `./build_and_flash.sh flash`: `nvs` и `otadata` остаются на прежних
 смещениях, настройки сохраняются. **Не используйте `erase-flash`**, если хотите
-сохранить конфигурацию. После прошивки устройство загружается с `factory`.
+сохранить конфигурацию. После прошивки устройство загружается с `ota_0`.
+
+#### Переход с `factory` + `ota_0` на `ota_0` + `ota_1` (1.4.3)
+
+До 1.4.3 в таблице было только два app-раздела: `factory` и один OTA-слот
+`ota_0`. После первого OTA устройство загружается из `ota_0`, и повторное
+обновление по сети невозможно: `esp_ota_get_next_update_partition()` возвращает
+тот же `ota_0`, а `esp_ota_begin()` отклоняет запись в работающий раздел
+(`ESP_ERR_OTA_PARTITION_CONFLICT`). Начиная с 1.4.3 используются два OTA-слота
+`ota_0` + `ota_1`; раздела `factory` больше нет.
+
+Переход с этой раскладки выполняется **только по USB** и один раз:
+
+```bash
+./build_and_flash.sh build
+./build_and_flash.sh flash
+```
+
+Смещение `nvs` (0x9000) не меняется, поэтому настройки сохраняются. Раздел
+SPIFFS (0x360000) перезаписывается тем же образом веб-интерфейса.
+**Не используйте `erase-flash`**. После прошивки устройство загружается с
+`ota_0` (1.4.3), прежний слот с 1.4.2 становится `ota_1` и доступен для
+отката, а последующие OTA-обновления работают штатно.
 
 ## Конфигурация
 
@@ -636,7 +664,7 @@ writes to an SD card, and reads I2C environmental / power-monitoring sensors.
   (no SD card required), with Dashboard, Configuration, WiFi, Sensors, SD Card,
   Files, Update, External, System Log and Account tabs. Access is protected by
   a cookie session (default `admin` / `admin`).
-- **OTA updates** with an A/B layout (`factory` + `ota_0`): `version.json`
+- **OTA updates** with an A/B layout (`ota_0` + `ota_1`): `version.json`
   manifest, SHA-256 verification, manual install and bootloader rollback of an
   unconfirmed image. The publishing server is `tools/ota_server.py`.
 - **SD file manager** — browse directories and download files from the web UI
@@ -647,6 +675,12 @@ writes to an SD card, and reads I2C environmental / power-monitoring sensors.
 - **Persistent configuration** in NVS with partial-update semantics.
 - **Runtime GPIO reassignment** with capability and conflict validation.
 - **Dual telnet bridges** relaying TCP to UART0 and UART1, each on its own port.
+  The bridges perform a minimal Telnet handshake (`WILL ECHO` / `WILL SGA`),
+  strip client IAC sequences and double `0xFF` in the UART→client stream, so
+  `telnet` no longer shows a double echo. Raw TCP clients (`nc`) will see the
+  6 welcome bytes. The bridges listen on `0.0.0.0`, so they are reachable both
+  from the SoftAP and from the LAN; they have no authentication, so do not
+  expose their ports to the internet.
 - **Optional SD-card logging** of UART traffic (`uar0.log` / `uar1.log`) and
   per-sensor readings (`sht21.csv` / `ina219.csv` / `ina226.csv` / `env.csv`),
   with 1 MB rotation, on an exFAT-capable FatFs.
@@ -720,7 +754,7 @@ Environment overrides: `IDF_PATH_OVERRIDE`, `IDF_TOOLS_PATH`, `PORT`,
 ```
 gateway/
 ├── CMakeLists.txt          # Top-level project definition
-├── partitions.csv          # Custom 4 MB layout (factory 1.625M + ota_0 1.625M + 640K SPIFFS)
+├── partitions.csv          # Custom 4 MB layout (ota_0 1.625M + ota_1 1.625M + 640K SPIFFS)
 ├── sdkconfig.defaults      # SDK defaults (target, console, SPIFFS, ...)
 ├── build_and_flash.sh      # Canonical build/flash/monitor/test script
 ├── main/
@@ -1072,9 +1106,10 @@ assigned to another role.
 ## OTA Updates
 
 From version **1.4.0** the firmware updates over the network (HTTP or HTTPS)
-without USB. The A/B layout uses `factory` and `ota_0` (1.625 MB each): the new
-image is written to the idle slot, verified by SHA-256 and selected for boot. If
-the post-boot self-test fails, the bootloader returns to the previous slot.
+without USB. The A/B layout uses `ota_0` and `ota_1` (1.625 MB each): the new
+image is written to the idle (non-running) slot, verified by SHA-256 and selected
+for boot. If the post-boot self-test fails, the bootloader returns to the
+previous slot.
 
 ### Update server
 
@@ -1083,15 +1118,15 @@ the post-boot self-test fails, the bootloader returns to the previous slot.
 
 ```bash
 mkdir -p firmware
-cp build/gateway.bin firmware/gateway-1.4.1.bin
+cp build/gateway.bin firmware/gateway-1.4.3.bin
 python3 tools/ota_server.py --root ./firmware \
-    --version 1.4.1 --filename gateway-1.4.1.bin --bind 0.0.0.0 --port 8000
+    --version 1.4.3 --filename gateway-1.4.3.bin --bind 0.0.0.0 --port 8000
 ```
 
 Manifest:
 
 ```json
-{"version":"1.4.1","filename":"gateway-1.4.1.bin","sha256":"<64 hex>"}
+{"version":"1.4.3","filename":"gateway-1.4.3.bin","sha256":"<64 hex>"}
 ```
 
 The SHA-256 is computed automatically (or supplied with `--sha256`). The server
@@ -1115,7 +1150,7 @@ local network and configure `https://` for production.
 
 ### Firmware version
 
-The version source is `project(gateway VERSION 1.4.1)` in the root
+The version source is `project(gateway VERSION 1.4.3)` in the root
 `CMakeLists.txt` (kept in sync with `CHANGELOG.md`). Do not add a `version.txt`
 file: it takes precedence over `VERSION`.
 
@@ -1124,7 +1159,29 @@ file: it takes precedence over `VERSION`.
 Moving from the old layout (2.5 MB `factory` + 1.375 MB SPIFFS) is done with a
 normal `./build_and_flash.sh flash`: `nvs` and `otadata` keep their offsets, so
 settings survive. **Do not use `erase-flash`** if you want to keep the
-configuration. After flashing the device boots from `factory`.
+configuration. After flashing the device boots from `ota_0`.
+
+#### Migrating from `factory` + `ota_0` to `ota_0` + `ota_1` (1.4.3)
+
+Before 1.4.3 the table had only two app partitions: `factory` and a single OTA
+slot `ota_0`. After the first OTA the device boots from `ota_0`, and a second
+network update is impossible: `esp_ota_get_next_update_partition()` returns the
+same `ota_0`, and `esp_ota_begin()` rejects writes to the running partition
+(`ESP_ERR_OTA_PARTITION_CONFLICT`). Starting with 1.4.3 there are two OTA slots,
+`ota_0` + `ota_1`; the `factory` partition is gone.
+
+Migrating that layout is a **one-time USB flash**:
+
+```bash
+./build_and_flash.sh build
+./build_and_flash.sh flash
+```
+
+The `nvs` offset (0x9000) is unchanged, so settings survive. The SPIFFS partition
+(0x360000) is rewritten with the same web UI image. **Do not use `erase-flash`**.
+After flashing the device boots from `ota_0` (1.4.3), the previous 1.4.2 slot
+becomes `ota_1` and remains available for rollback, and later OTA updates work
+normally.
 
 ## Configuration
 

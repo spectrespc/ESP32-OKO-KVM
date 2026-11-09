@@ -18,8 +18,8 @@ CONFIG_ESP_MAIN_TASK_AFFINITY=0
 # Flash size (ESP32-C6FH4 has 4MB embedded flash; default 2MB wastes half).
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
-# Partition table - custom layout with A/B OTA slots plus a SPIFFS partition
-# for the web UI (see partitions.csv): factory 1.625M + ota_0 1.625M + 640K
+# Partition table - custom layout with two A/B OTA slots plus a SPIFFS partition
+# for the web UI (see partitions.csv): ota_0 1.625M + ota_1 1.625M + 640K
 # SPIFFS.
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

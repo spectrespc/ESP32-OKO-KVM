@@ -7,7 +7,7 @@
 //
 // An update is installed only when the manifest version is strictly newer than
 // the running app. Integrity is enforced with SHA-256 (there is no TLS). The
-// target slot is the next OTA partition (factory <-> ota_0); the bootloader
+// target slot is the next OTA partition (ota_0 <-> ota_1); the bootloader
 // rolls back if the new image does not confirm itself after boot.
 #include "ota_handler.h"
 #include "config.h"
@@ -391,6 +391,15 @@ static esp_err_t download_and_apply(const ota_manifest_t* m)
     if (!update) {
         ESP_LOGE(TAG, "No OTA update partition found");
         return ESP_ERR_NOT_FOUND;
+    }
+    // With the legacy factory + single ota_0 layout, a device booted from
+    // ota_0 has no other OTA slot and esp_ota_begin() would fail only after
+    // downloading the whole image. Fail early with a migration hint.
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    if (running && update->address == running->address) {
+        ESP_LOGE(TAG, "Only one OTA slot and it is running; reflash the "
+                      "partition table over USB (see README: ota_0 + ota_1)");
+        return ESP_ERR_OTA_PARTITION_CONFLICT;
     }
     ESP_LOGI(TAG, "Installing %s into '%s' (%u bytes max)", m->filename,
              update->label, (unsigned)update->size);

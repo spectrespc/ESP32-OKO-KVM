@@ -63,8 +63,8 @@ static bool running_from_ota_slot(void)
 }
 
 // Confirms a freshly installed OTA image after the endpoint self-test passed.
-// Skipped when the device booted from the factory slot (nothing to confirm) or
-// when rollback support is disabled.
+// Skipped when the device booted from a non-OTA slot (for example a legacy
+// factory image) or when rollback support is disabled.
 static void confirm_ota_image(void)
 {
     if (!running_from_ota_slot()) {
