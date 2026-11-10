@@ -1194,6 +1194,13 @@ function renderUpdate(){
         <p class="muted" style="margin:12px 0 0">Periodic checks only report an available
           version. A changed interval takes effect after reboot.</p>
       </div>
+    </div>
+    <div class="card section">
+      <h3>Boot slots</h3>
+      <div id="upd-slots">${spinnerCard("loading…")}</div>
+      <p class="muted" style="margin:12px 0 0">Switching boots the inactive slot and
+        restarts the device. If the new firmware fails its self-test, the bootloader
+        rolls back to the previous slot.</p>
     </div>`;
 
   const RESULT_BADGES = {
@@ -1224,16 +1231,71 @@ function renderUpdate(){
     if (installBtn) installBtn.disabled = !!s.busy || !s.available_version;
   }
 
+  function renderSlots(r, busy){
+    const box = $("#upd-slots");
+    if (!box) return;
+    if (!r.ok){
+      box.innerHTML = `<div class="empty">Boot slots unavailable (HTTP ${r.status}).</div>`;
+      return;
+    }
+    const data = r.data || {};
+    const slots = data.slots || [];
+    if (!slots.length){
+      box.innerHTML = `<div class="empty">No OTA slots found.</div>`;
+      return;
+    }
+    box.innerHTML = slots.map(s => {
+      const isRunning = s.running === true || s.label === data.running;
+      const state = String(s.state || "unknown");
+      const stateBadge = state === "valid" ? badge("valid", "ok")
+                       : state === "pending_verify" ? badge("pending", "warn")
+                       : (state === "invalid" || state === "aborted") ? badge(state, "err")
+                       : badge(state, "off");
+      const addr = typeof s.address === "number" ? ("0x" + s.address.toString(16)) : "";
+      const action = isRunning
+        ? badge("running", "ok")
+        : `<button class="btn ghost" data-slot="${escapeHtml(s.label)}" ${(!s.bootable || busy) ? "disabled" : ""}>Switch to ${escapeHtml(s.label)}</button>`;
+      return `<div class="status-row">
+        <span><b>${escapeHtml(s.label)}</b> <span class="muted">${escapeHtml(s.version || "unknown")} · ${addr}</span></span>
+        <span>${isRunning ? action : stateBadge + " " + action}</span>
+      </div>`;
+    }).join("");
+
+    box.querySelectorAll("button[data-slot]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const label = btn.getAttribute("data-slot");
+        const slot = slots.find(x => x.label === label);
+        const ver = slot && slot.version ? (" (" + slot.version + ")") : "";
+        openConfirm("Switch boot slot",
+          `The device will restart into ${label}${ver}. Continue?`,
+          "Switch",
+          async () => {
+            const res = await fetchJSON("POST", "/ota/slot", { slot: label });
+            if (res.ok){
+              toast("Switching boot slot. The device is restarting…", "ok");
+            }else{
+              toast("Switch failed: " + ((res.data && res.data.error) || ("HTTP " + res.status)), "err");
+            }
+          });
+      });
+    });
+  }
+
   async function refresh(){
-    const r = await fetchJSON("GET", "/ota/status");
+    const [r, slotsR] = await Promise.all([
+      fetchJSON("GET", "/ota/status"),
+      fetchJSON("GET", "/ota/slots"),
+    ]);
     const box = $("#upd-status");
     if (!box) return;
     if (!r.ok){
       box.innerHTML = `<div class="empty">OTA status unavailable (HTTP ${r.status}).</div>`;
+      renderSlots(slotsR, false);
       return;
     }
     const s = r.data || {};
     renderStatus(s);
+    renderSlots(slotsR, !!s.busy);
     if (!formFilled){
       const en = $("#upd_ota_enable");
       const url = $("#upd_ota_url");

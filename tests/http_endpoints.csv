@@ -20,6 +20,7 @@ GET,/ext/status,200
 POST,/ext/power,400|503
 POST,/ext/reset,503
 GET,/ota/status,200
+GET,/ota/slots,200
 GET,/sd/list,200|503
 GET,/sd/download,404|503
 GET,/config/export,200

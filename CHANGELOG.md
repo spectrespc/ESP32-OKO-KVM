@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-11-10
+
+### Added
+- The Update tab now lists both OTA slots (`ota_0`/`ota_1`) with their version,
+  state and the active slot, and can switch the boot slot. New API:
+  `GET /ota/slots` and `POST /ota/slot`. A switch is rejected for the running or
+  a non-bootable slot and while an OTA operation is in progress; a failed boot
+  after the switch rolls back.
+
 ## [1.4.3] — 2026-11-09
 
 ### Fixed

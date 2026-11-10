@@ -457,6 +457,49 @@ curl -b cookies.txt -X POST -H 'Content-Type: application/json' \
 | `403` | cross-origin запрос |
 | `503` | `ota_url` не задан |
 
+### `GET /ota/slots`
+
+Возвращает оба OTA-слота с версией, состоянием и признаком текущего слота.
+Требует `auth`.
+
+```bash
+curl -b cookies.txt http://192.168.4.1/ota/slots
+```
+
+```json
+{
+  "running": "ota_0",
+  "slots": [
+    {"label":"ota_0","address":131072,"size":1703936,"version":"1.5.0","state":"valid","running":true,"bootable":true},
+    {"label":"ota_1","address":1835008,"size":1703936,"version":"1.4.3","state":"valid","running":false,"bootable":true}
+  ]
+}
+```
+
+- `running` — метка текущего загрузочного слота.
+- `state` — `new`, `pending_verify`, `valid`, `invalid`, `aborted` или
+  `inactive` (слот ещё не выбирался загрузчиком, записи в `otadata` нет).
+- `bootable` — из слота удалось прочитать описание приложения.
+
+### `POST /ota/slot`
+
+Переключает загрузочный слот и перезагружает устройство. Требует `auth` и
+same-origin. Тело запроса: `{"slot":"ota_1"}`. Работающий слот и слот без
+читаемого образа отклоны; во время OTA-проверки/установки возвращается `409`.
+
+```bash
+curl -b cookies.txt -X POST -H 'Content-Type: application/json' \
+     -d '{"slot":"ota_1"}' http://192.168.4.1/ota/slot
+```
+
+| Статус | Тело |
+|--------|------|
+| `200` | `{"message":"Switching boot slot"}`, затем перезагрузка |
+| `400` | неверная метка или выбран работающий слот |
+| `403` | cross-origin запрос |
+| `404` | слот не найден |
+| `409` | идёт OTA или слот не загружаем |
+
 ## `GET /logs`
 
 Кольцевой буфер последних строк лога ESP-IDF (до 128 строк) в хронологическом

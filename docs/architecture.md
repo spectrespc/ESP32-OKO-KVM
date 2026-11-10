@@ -163,6 +163,13 @@ STA-адрес), обслуживает одного клиента за раз,
 остаётся активным. Целевой раздел — `esp_ota_get_next_update_partition()`
 (чередование `ota_0` ↔ `ota_1`).
 
+`GET /ota/slots` отдаёт версии и состояния обоих слотов (описание читается
+через `esp_ota_get_partition_description()`, состояние — через
+`esp_ota_get_state_partition()`). `POST /ota/slot` проверяет, что выбранный
+слот не является работающим и содержит читаемый образ, вызывает
+`esp_ota_set_boot_partition()` и перезагружает устройство; во время работы
+OTA-воркера переключение блокируется.
+
 Rollback: `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` — новый образ стартует как
 `PENDING_VERIFY`; `self_test.c` подтверждает его
 (`esp_ota_mark_app_valid_cancel_rollback`) только после полностью успешного

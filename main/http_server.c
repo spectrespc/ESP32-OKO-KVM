@@ -14,6 +14,9 @@
 #include "auth_handler.h"
 #include "ota_handler.h"
 #include "cJSON.h"
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -652,6 +655,78 @@ static esp_err_t handle_post_ota_update(httpd_req_t *req)
                       "{\"message\":\"Update started\"}");
 }
 
+static esp_err_t handle_get_ota_slots(httpd_req_t *req)
+{
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
+    char* json = ota_get_slots_json();
+    if (!json) {
+        return reply_json(req, "500 Internal Server Error",
+                          "{\"error\":\"Failed to get OTA slots\"}");
+    }
+    esp_err_t err = reply_json(req, "200 OK", json);
+    free(json);
+    return err;
+}
+
+static esp_err_t handle_post_ota_slot(httpd_req_t *req)
+{
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
+    if (!request_is_same_origin(req)) {
+        return reply_json(req, "403 Forbidden",
+                          "{\"error\":\"Cross-origin request rejected\"}");
+    }
+
+    char body[128];
+    if (read_body(req, body, sizeof(body)) < 0) {
+        return reply_json(req, "400 Bad Request",
+                          "{\"error\":\"Invalid request body\"}");
+    }
+
+    cJSON* root = cJSON_Parse(body);
+    if (!root) {
+        return reply_json(req, "400 Bad Request",
+                          "{\"error\":\"Invalid JSON\"}");
+    }
+    cJSON* jslot = cJSON_GetObjectItemCaseSensitive(root, "slot");
+    if (!cJSON_IsString(jslot) || jslot->valuestring[0] == '\0') {
+        cJSON_Delete(root);
+        return reply_json(req, "400 Bad Request",
+                          "{\"error\":\"Missing slot\"}");
+    }
+
+    esp_err_t err = ota_set_boot_slot(jslot->valuestring);
+    cJSON_Delete(root);
+
+    if (err != ESP_OK) {
+        const char* status = "500 Internal Server Error";
+        const char* message = "Could not switch boot slot";
+        if (err == ESP_ERR_INVALID_ARG) {
+            status = "400 Bad Request";
+            message = "Invalid slot or slot is running";
+        } else if (err == ESP_ERR_INVALID_STATE) {
+            status = "409 Conflict";
+            message = "OTA busy or target slot is not bootable";
+        } else if (err == ESP_ERR_NOT_FOUND) {
+            status = "404 Not Found";
+            message = "Slot not found";
+        }
+        char json[160];
+        snprintf(json, sizeof(json), "{\"error\":\"%s\"}", message);
+        return reply_json(req, status, json);
+    }
+
+    // Send the acknowledgement before restarting so the browser can react.
+    esp_err_t reply = reply_json(req, "200 OK",
+                                 "{\"message\":\"Switching boot slot\"}");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return reply; // not reached
+}
+
 static esp_err_t handle_get_ext_status(httpd_req_t *req)
 {
     if (!auth_check(req)) {
@@ -789,6 +864,8 @@ void init_http_server(void)
         {"/ota/status", HTTP_METHOD_GET, handle_get_ota_status},
         {"/ota/check", HTTP_METHOD_POST, handle_post_ota_check},
         {"/ota/update", HTTP_METHOD_POST, handle_post_ota_update},
+        {"/ota/slots", HTTP_METHOD_GET, handle_get_ota_slots},
+        {"/ota/slot", HTTP_METHOD_POST, handle_post_ota_slot},
         {"/logs", HTTP_METHOD_GET, handle_get_logs},
         {"/wifi/scan", HTTP_METHOD_GET, handle_wifi_scan},
         {"/wifi/scan/results", HTTP_METHOD_GET, handle_wifi_scan_results},

@@ -496,15 +496,15 @@ USB. Схема A/B: разделы `ota_0` и `ota_1` по 1.625 МБ; новы
 
 ```bash
 mkdir -p firmware
-cp build/gateway.bin firmware/gateway-1.4.3.bin
+cp build/gateway.bin firmware/gateway-1.5.0.bin
 python3 tools/ota_server.py --root ./firmware \
-    --version 1.4.3 --filename gateway-1.4.3.bin --bind 0.0.0.0 --port 8000
+    --version 1.5.0 --filename gateway-1.5.0.bin --bind 0.0.0.0 --port 8000
 ```
 
 Манифест:
 
 ```json
-{"version":"1.4.3","filename":"gateway-1.4.3.bin","sha256":"<64 hex>"}
+{"version":"1.5.0","filename":"gateway-1.5.0.bin","sha256":"<64 hex>"}
 ```
 
 SHA-256 считается автоматически (или задаётся через `--sha256`). Сервер не
@@ -526,9 +526,20 @@ SHA-256 считается автоматически (или задаётся �
 каналу и не спасает от MITM — используйте HTTP только в доверенной локальной
 сети, а для продакшена задавайте `https://`.
 
+### Переключение OTA-слотов
+
+Вкладка **Update** показывает оба слота (`ota_0`/`ota_1`): версию, состояние и
+текущий загрузочный слот. Кнопка **Switch to …** переключает загрузку на
+неактивный слот и перезагружает устройство; после успешного self-test образ
+подтверждается, при сбое bootloader откатывается на прежний слот.
+
+API: `GET /ota/slots` — список слотов; `POST /ota/slot` с телом
+`{"slot":"ota_1"}` — переключение. Переключение недоступно на работающий или
+незагружаемый слот и блокируется, пока идёт OTA-проверка/установка.
+
 ### Версия прошивки
 
-Источник версии — `project(gateway VERSION 1.4.3)` в корневом `CMakeLists.txt`
+Источник версии — `project(gateway VERSION 1.5.0)` в корневом `CMakeLists.txt`
 (синхронно с `CHANGELOG.md`). Не создавайте файл `version.txt`: он имеет
 приоритет над `VERSION`.
 
@@ -1118,15 +1129,15 @@ previous slot.
 
 ```bash
 mkdir -p firmware
-cp build/gateway.bin firmware/gateway-1.4.3.bin
+cp build/gateway.bin firmware/gateway-1.5.0.bin
 python3 tools/ota_server.py --root ./firmware \
-    --version 1.4.3 --filename gateway-1.4.3.bin --bind 0.0.0.0 --port 8000
+    --version 1.5.0 --filename gateway-1.5.0.bin --bind 0.0.0.0 --port 8000
 ```
 
 Manifest:
 
 ```json
-{"version":"1.4.3","filename":"gateway-1.4.3.bin","sha256":"<64 hex>"}
+{"version":"1.5.0","filename":"gateway-1.5.0.bin","sha256":"<64 hex>"}
 ```
 
 The SHA-256 is computed automatically (or supplied with `--sha256`). The server
@@ -1148,9 +1159,21 @@ automatic redirects are disabled. With `http://` the SHA-256 arrives over the
 same unauthenticated channel and cannot stop a MITM — use HTTP only on a trusted
 local network and configure `https://` for production.
 
+### Switching OTA slots
+
+The **Update** tab shows both slots (`ota_0`/`ota_1`) with their version, state
+and the active boot slot. **Switch to …** boots the inactive slot and restarts
+the device; a successful self-test confirms the image, while a failed boot rolls
+back to the previous slot.
+
+API: `GET /ota/slots` lists the slots; `POST /ota/slot` with
+`{"slot":"ota_1"}` switches the boot slot. Switching to the running or a
+non-bootable slot is rejected, and it is blocked while an OTA check/install is
+in progress.
+
 ### Firmware version
 
-The version source is `project(gateway VERSION 1.4.3)` in the root
+The version source is `project(gateway VERSION 1.5.0)` in the root
 `CMakeLists.txt` (kept in sync with `CHANGELOG.md`). Do not add a `version.txt`
 file: it takes precedence over `VERSION`.
 

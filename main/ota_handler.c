@@ -41,6 +41,7 @@ static const char* TAG = "ota";
 #define OTA_SHA256_HEX_LEN          64
 #define OTA_DL_BUF_SIZE             2048
 #define OTA_CHECK_THROTTLE_US       (5LL * 1000 * 1000)
+#define OTA_SLOT_COUNT              2
 
 #define OTA_NOTIFY_CHECK            (1u << 0)
 #define OTA_NOTIFY_UPDATE           (1u << 1)
@@ -61,6 +62,18 @@ static bool s_busy = false;
 static int64_t s_last_check_us = 0;
 
 // --- small helpers -----------------------------------------------------------
+
+static const char* ota_state_name(esp_ota_img_states_t state)
+{
+    switch (state) {
+        case ESP_OTA_IMG_NEW:            return "new";
+        case ESP_OTA_IMG_PENDING_VERIFY: return "pending_verify";
+        case ESP_OTA_IMG_VALID:          return "valid";
+        case ESP_OTA_IMG_INVALID:        return "invalid";
+        case ESP_OTA_IMG_ABORTED:        return "aborted";
+        default:                         return "unknown";
+    }
+}
 
 static int64_t uptime_s(void)
 {
@@ -740,4 +753,115 @@ char* ota_get_status_json(void)
     char* out = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     return out;
+}
+
+char* ota_get_slots_json(void)
+{
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        return NULL;
+    }
+
+    // Add "running" field
+    const char* running_label = running ? running->label : "";
+    cJSON_AddStringToObject(root, "running", running_label);
+
+    // Build "slots" array
+    cJSON* slots = cJSON_CreateArray();
+    if (!slots) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON_AddItemToObject(root, "slots", slots);
+
+    for (int i = 0; i < OTA_SLOT_COUNT; i++) {
+        const esp_partition_t* part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP,
+            (esp_partition_subtype_t)(ESP_PARTITION_SUBTYPE_APP_OTA_0 + i),
+            NULL);
+        if (!part) {
+            continue;
+        }
+
+        char version[OTA_VERSION_MAX] = "";
+        const char* state_name = "inactive";
+        bool desc_ok = false;
+
+        esp_app_desc_t desc;
+        if (esp_ota_get_partition_description(part, &desc) == ESP_OK) {
+            desc_ok = true;
+            snprintf(version, sizeof(version), "%s", desc.version);
+        }
+
+        esp_ota_img_states_t state;
+        if (esp_ota_get_state_partition(part, &state) == ESP_OK) {
+            state_name = ota_state_name(state);
+        }
+
+        cJSON* slot = cJSON_CreateObject();
+        if (!slot) {
+            cJSON_Delete(root);
+            return NULL;
+        }
+        cJSON_AddItemToArray(slots, slot);
+
+        cJSON_AddStringToObject(slot, "label", part->label);
+        cJSON_AddNumberToObject(slot, "address", (double)part->address);
+        cJSON_AddNumberToObject(slot, "size", (double)part->size);
+        cJSON_AddStringToObject(slot, "version", version);
+        cJSON_AddStringToObject(slot, "state", state_name);
+        cJSON_AddBoolToObject(slot, "running", running ? (part->address == running->address) : false);
+        cJSON_AddBoolToObject(slot, "bootable", desc_ok);
+    }
+
+    char* out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return out;
+}
+
+esp_err_t ota_set_boot_slot(const char* label)
+{
+    if (!label) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Accept only "ota_0" and "ota_1"
+    if (strcmp(label, "ota_0") != 0 && strcmp(label, "ota_1") != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    portENTER_CRITICAL(&s_lock);
+    if (s_busy) {
+        portEXIT_CRITICAL(&s_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    portEXIT_CRITICAL(&s_lock);
+
+    // Find the target partition
+    const esp_partition_t* target = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP,
+        (esp_partition_subtype_t)(ESP_PARTITION_SUBTYPE_APP_OTA_0 + (label[4] - '0')),
+        NULL);
+    if (!target) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    if (running && target->address == running->address) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_app_desc_t desc;
+    esp_err_t err = esp_ota_get_partition_description(target, &desc);
+    if (err != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    err = esp_ota_set_boot_partition(target);
+    if (err == ESP_OK) {
+        set_busy(true);
+        ESP_LOGI(TAG, "Boot slot switched to '%s' (%s)", target->label, desc.version);
+    }
+    return err;
 }
