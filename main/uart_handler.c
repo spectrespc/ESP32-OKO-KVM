@@ -15,8 +15,17 @@ void init_uart0(void)
         return;
     }
 
+    // Fall back to the compiled-in default for a value that is not whitelisted
+    // (0 from a failed NVS open, or a manually corrupted key).
+    uint32_t baud = cfg->baud_rate;
+    if (!config_baud_rate_valid(baud)) {
+        ESP_LOGW(TAG, "UART0 baud_rate=%u not in whitelist; using %d",
+                 (unsigned)baud, UART0_CONFIG_BAUD_RATE);
+        baud = UART0_CONFIG_BAUD_RATE;
+    }
+
     uart_config_t uart0_config = {
-        .baud_rate = UART0_CONFIG_BAUD_RATE,
+        .baud_rate = (int)baud,
         .data_bits = UART0_CONFIG_DATA_BITS,
         .parity = UART0_CONFIG_PARITY,
         .stop_bits = UART0_CONFIG_STOP_BITS,
@@ -30,8 +39,8 @@ void init_uart0(void)
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM_0, 4096, 4096, 0, NULL, 0));
     
-    ESP_LOGI(TAG, "UART0 initialized (tx=%d rx=%d)",
-             (int)cfg->pins.uart0_tx, (int)cfg->pins.uart0_rx);
+    ESP_LOGI(TAG, "UART0 initialized (tx=%d rx=%d baud=%u)",
+             (int)cfg->pins.uart0_tx, (int)cfg->pins.uart0_rx, (unsigned)baud);
 }
 
 void init_uart1(void)
@@ -42,8 +51,15 @@ void init_uart1(void)
         return;
     }
 
+    uint32_t baud = cfg->uart1_baud_rate;
+    if (!config_baud_rate_valid(baud)) {
+        ESP_LOGW(TAG, "UART1 uart1_baud_rate=%u not in whitelist; using %d",
+                 (unsigned)baud, UART1_CONFIG_BAUD_RATE);
+        baud = UART1_CONFIG_BAUD_RATE;
+    }
+
     uart_config_t uart1_config = {
-        .baud_rate = UART1_CONFIG_BAUD_RATE,
+        .baud_rate = (int)baud,
         .data_bits = UART1_CONFIG_DATA_BITS,
         .parity = UART1_CONFIG_PARITY,
         .stop_bits = UART1_CONFIG_STOP_BITS,
@@ -57,8 +73,8 @@ void init_uart1(void)
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, 4096, 4096, 0, NULL, 0));
     
-    ESP_LOGI(TAG, "UART1 initialized (tx=%d rx=%d)",
-             (int)cfg->pins.uart1_tx, (int)cfg->pins.uart1_rx);
+    ESP_LOGI(TAG, "UART1 initialized (tx=%d rx=%d baud=%u)",
+             (int)cfg->pins.uart1_tx, (int)cfg->pins.uart1_rx, (unsigned)baud);
 }
 
 void uart0_send_data(const uint8_t* data, size_t len)

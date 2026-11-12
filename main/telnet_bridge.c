@@ -8,7 +8,9 @@
 #include "telnet_bridge.h"
 #include "config.h"
 #include "sd_handler.h"
+#include "ntp_time.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
@@ -22,6 +24,14 @@
 #define TELNET_BUF_SIZE 256
 #define TELNET_RETRY_MS 5000
 #define TELNET_DISCONNECT_MS 500
+
+// SD log formatting. The worst case for text mode is 4x expansion ("\xNN"),
+// so a 256-byte relay chunk is formatted and appended in <=128-byte slices to
+// stay well inside the per-bridge buffer (which lives in .bss, not on the
+// 4096-byte bridge task stack).
+#define SD_LOG_SLICE_SIZE 128
+#define SD_LOG_BUF_SIZE   1024
+#define SD_LOG_HEX_COLS   16
 
 // Telnet constants
 #define TELNET_IAC 0xFF
@@ -58,8 +68,10 @@ typedef struct {
     volatile int  listen_fd;
     volatile int  client_fd;
     // SD-card logging, set once at start from config (immutable afterwards).
-    bool          sd_log_enable;
+    bool          sd_log_enable;    // uartN_sd_log at bridge start
+    uint8_t       sd_log_fmt;       // UART_SD_LOG_FMT_* at bridge start
     const char*   sd_log_filename;  // "uar0.log" or "uar1.log"
+    char          sd_log_buf[SD_LOG_BUF_SIZE];  // formatted chunk staging
     // Telnet parser state
     uint8_t tn_state;    // TN_DATA / TN_IAC / TN_OPT / TN_SB / TN_SB_IAC
     uint8_t tn_opt_cmd;  // WILL/WONT/DO/DONT awaiting its option byte
@@ -80,15 +92,138 @@ static telnet_bridge_ctx_t s_bridge1 = {
     .sd_log_filename = "uar1.log",
 };
 
+// Formats one slice of relayed traffic for the SD log. Text mode escapes
+// everything outside printable ASCII plus CR/LF as "\xNN"; hexdump mode emits
+// 16-byte lines with an ASCII column. Both prefix each output line with the
+// local wall-clock time from ntp_stamp() ("[2026-11-12 11:15:55.123]") once
+// SNTP has synced the clock, or with the uptime in milliseconds
+// ("[<ms>ms]") before the first successful sync, plus the direction.
+// Buffer sizing: a stamp prefix adds 25 bytes per line versus the uptime
+// prefix, so text worst case is 25 + 4 + 4*128 = 541 bytes and a hexdump slice
+// is 8 lines * 105 = 840 bytes; both stay inside SD_LOG_BUF_SIZE (1024).
+// base_off is the slice offset within the relay chunk: hexdump uses it so the
+// byte position keeps counting across slices, and text emits its prefix only
+// for the first slice (one prefix per chunk).
+// Returns the number of bytes written to dst (never including a NUL).
+static size_t sd_log_format(char* dst, size_t dst_sz, uint8_t fmt, bool rx,
+                            size_t base_off, const uint8_t* data, size_t len)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    const char* dir = rx ? "RX" : "TX";
+    uint64_t uptime_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    char stamp[32];
+    bool have_stamp = ntp_stamp(stamp, sizeof(stamp));
+    size_t out = 0;
+
+    if (fmt == UART_SD_LOG_FMT_TEXT) {
+        if (base_off == 0) {
+            int n = have_stamp
+                        ? snprintf(dst, dst_sz, "[%s] %s: ", stamp, dir)
+                        : snprintf(dst, dst_sz, "[%llums] %s: ",
+                                   (unsigned long long)uptime_ms, dir);
+            if (n < 0 || (size_t)n >= dst_sz) {
+                return 0;
+            }
+            out = (size_t)n;
+        }
+
+        for (size_t i = 0; i < len; i++) {
+            uint8_t c = data[i];
+            char esc[4];
+            const char* piece;
+            size_t piece_len;
+
+            if ((c >= 0x20 && c <= 0x7E) || c == '\n' || c == '\r') {
+                esc[0] = (char)c;
+                piece = esc;
+                piece_len = 1;
+            } else {
+                esc[0] = '\\';
+                esc[1] = 'x';
+                esc[2] = hex[c >> 4];
+                esc[3] = hex[c & 0x0F];
+                piece = esc;
+                piece_len = 4;
+            }
+            if (out + piece_len + 1 > dst_sz) {
+                break;
+            }
+            memcpy(dst + out, piece, piece_len);
+            out += piece_len;
+        }
+        return out;
+    }
+
+    // Hexdump: one line per 16 input bytes.
+    for (size_t off = 0; off < len; off += SD_LOG_HEX_COLS) {
+        size_t line_len = len - off;
+        if (line_len > SD_LOG_HEX_COLS) {
+            line_len = SD_LOG_HEX_COLS;
+        }
+        int n = have_stamp
+                    ? snprintf(dst + out, dst_sz - out, "[%s] %s %04x:  ",
+                               stamp, dir, (unsigned)(base_off + off))
+                    : snprintf(dst + out, dst_sz - out, "[%llums] %s %04x:  ",
+                               (unsigned long long)uptime_ms, dir,
+                               (unsigned)(base_off + off));
+        if (n < 0 || out + (size_t)n >= dst_sz) {
+            break;
+        }
+        out += (size_t)n;
+        // Fixed-width hex column + " |" + ASCII column + "|\n".
+        if (out + SD_LOG_HEX_COLS * 3 + SD_LOG_HEX_COLS + 5 > dst_sz) {
+            break;
+        }
+        for (size_t i = 0; i < SD_LOG_HEX_COLS; i++) {
+            if (i < line_len) {
+                dst[out++] = hex[data[off + i] >> 4];
+                dst[out++] = hex[data[off + i] & 0x0F];
+                dst[out++] = ' ';
+            } else {
+                dst[out++] = ' ';
+                dst[out++] = ' ';
+                dst[out++] = ' ';
+            }
+        }
+        dst[out++] = ' ';
+        dst[out++] = '|';
+        for (size_t i = 0; i < line_len; i++) {
+            uint8_t c = data[off + i];
+            dst[out++] = (c >= 0x20 && c <= 0x7E) ? (char)c : '.';
+        }
+        dst[out++] = '|';
+        dst[out++] = '\n';
+    }
+    return out;
+}
+
 // Append a chunk of relayed traffic to this bridge's SD log file. Nothing is
 // logged on success; without a mounted card sd_write_rotate() is a silent
 // no-op. Rotation keeps the file bounded at LOG_ROTATE_MAX_SIZE.
-static void sd_log_write(telnet_bridge_ctx_t* ctx, const uint8_t* data, size_t len)
+static void sd_log_write(telnet_bridge_ctx_t* ctx, bool rx, const uint8_t* data, size_t len)
 {
     if (!ctx->sd_log_enable || len == 0) {
         return;
     }
-    sd_write_rotate(ctx->sd_log_filename, data, len);
+
+    if (ctx->sd_log_fmt != UART_SD_LOG_FMT_TEXT &&
+        ctx->sd_log_fmt != UART_SD_LOG_FMT_HEXDUMP) {
+        // Raw mode: byte-identical to the pre-formatter behaviour.
+        sd_write_rotate(ctx->sd_log_filename, data, len);
+        return;
+    }
+
+    for (size_t off = 0; off < len; off += SD_LOG_SLICE_SIZE) {
+        size_t slice = len - off;
+        if (slice > SD_LOG_SLICE_SIZE) {
+            slice = SD_LOG_SLICE_SIZE;
+        }
+        size_t n = sd_log_format(ctx->sd_log_buf, sizeof(ctx->sd_log_buf),
+                                 ctx->sd_log_fmt, rx, off, data + off, slice);
+        if (n > 0) {
+            sd_write_rotate(ctx->sd_log_filename, (const uint8_t*)ctx->sd_log_buf, n);
+        }
+    }
 }
 
 // Send all bytes from buffer, handling partial sends and timeouts.
@@ -279,7 +414,9 @@ static void relay_loop(telnet_bridge_ctx_t* ctx)
                 break; // negotiation reply failed
             }
             if (cleaned > 0) {
-                sd_log_write(ctx, buf, (size_t)cleaned);
+                // Client -> UART traffic is logged after IAC stripping, exactly
+                // as it is written to the device.
+                sd_log_write(ctx, false, buf, (size_t)cleaned);
                 uart_write_bytes(ctx->uart_num, (const char*)buf, cleaned);
             }
         } else if (n == 0) {
@@ -291,7 +428,7 @@ static void relay_loop(telnet_bridge_ctx_t* ctx)
         // UART -> TCP client
         int r = uart_read_bytes(ctx->uart_num, buf, sizeof(buf), pdMS_TO_TICKS(50));
         if (r > 0) {
-            sd_log_write(ctx, buf, (size_t)r);
+            sd_log_write(ctx, true, buf, (size_t)r);
             if (!send_stuffed(ctx, buf, r)) {
                 break;
             }
@@ -438,6 +575,7 @@ void init_telnet_bridge0(void)
 {
     const app_config_t* cfg = get_config();
     s_bridge0.sd_log_enable = cfg->uart0_sd_log != 0;
+    s_bridge0.sd_log_fmt = cfg->uart0_sd_log_fmt;
     start_bridge(&s_bridge0);
 }
 
@@ -445,6 +583,7 @@ void init_telnet_bridge1(void)
 {
     const app_config_t* cfg = get_config();
     s_bridge1.sd_log_enable = cfg->uart1_sd_log != 0;
+    s_bridge1.sd_log_fmt = cfg->uart1_sd_log_fmt;
     start_bridge(&s_bridge1);
 }
 

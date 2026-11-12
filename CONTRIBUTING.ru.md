@@ -61,8 +61,8 @@ idf.py -p /dev/ttyACM0 monitor
   (`tools/gen_http_tests.py`);
 - патчит `fatfs/src/ffconf.h` (`FF_FS_EXFAT 0 → 1`), так как IDF v6.0.2 не
   предоставляет опции Kconfig для exFAT;
-- собирает образ SPIFFS из каталога `web/`
-  (`spiffs_create_partition_image(...)`).
+- встраивает `web/index.html` в образ приложения (`EMBED_FILES`); отдельный
+  образ SPIFFS больше не собирается.
 
 Подробнее — в [`docs/build.md`](docs/build.md).
 
@@ -81,7 +81,7 @@ idf.py -p /dev/ttyACM0 monitor
 | `sd_handler.[ch]` | SD/SPI, FatFs, запись с ротацией `sd_write_rotate()` |
 | `sensor_handler.[ch]` | Драйверы I2C (SHT21/INA219/INA226), задача логирования, MQTT |
 | `http_server.[ch]` | HTTP-сервер, регистрация эндпоинтов, JSON-помощники |
-| `web_handlers.[ch]` | Монтирование SPIFFS и отдача статики |
+| `web_handlers.[ch]` | Отдача встроенного в образ SPA |
 | `log_handler.[ch]` | Кольцевой буфер лога (`esp_log_set_vprintf`) и `GET /logs` |
 | `wifi_ap.[ch]` | Инициализация Wi-Fi в режиме AP+STA и SoftAP |
 | `wifi_scan.[ch]` | STA: сканирование, подключение, статус, отключение |
@@ -142,7 +142,7 @@ build: enable exFAT via ffconf patch
   целочисленные с фиксированной запятой, чтобы сериализоваться в JSON без потерь.
 - **Инициализация:** `app_main()` вызывает подсистемы в строгом порядке
   (NVS → лог → конфигурация → пины → UART → датчики → SD → Wi-Fi AP → STA →
-  MQTT → telnet → SPIFFS → HTTP → self-test). Не нарушайте этот порядок без
+  MQTT → telnet → HTTP → self-test). Не нарушайте этот порядок без
   веской причины.
 - **Логирование:** используйте `ESP_LOGx(TAG, ...)`. Не вызывайте `ESP_LOG`
   внутри обработчика-перехватчика лога (`log_handler.c`) — это приведёт к

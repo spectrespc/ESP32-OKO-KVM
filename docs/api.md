@@ -19,7 +19,7 @@ JSON, если не указано иное.
 
 | Метод | Путь | Успех | Краткое описание |
 |-------|------|-------|------------------|
-| GET | `/` | 200 | Веб-интерфейс (SPA из SPIFFS) |
+| GET | `/` | 200 | Веб-интерфейс (SPA, встроенный в прошивку) |
 | GET | `/config` | 200 | Текущая конфигурация |
 | POST | `/config` | 200 | Частичное обновление конфигурации |
 | GET | `/config/export` | 200 | Экспорт настроек в JSON-файл (attachment) |
@@ -38,12 +38,14 @@ JSON, если не указано иное.
 | POST | `/wifi/connect` | 200 | Сохранить учётные данные STA и подключиться |
 | GET | `/wifi/status` | 200 | Состояние подключения STA |
 | POST | `/wifi/disconnect` | 200 | Разорвать связь STA и забыть учётные данные |
+| GET | `/system/time` | 200 | Состояние системных часов и NTP |
+| POST | `/system/time` | 202 | Запустить внеочередную синхронизацию NTP |
 | POST | `/system/reboot` | 200 | Перезагрузить устройство |
 | POST | `/system/reset` | 200 | Стереть NVS и перезагрузить |
 | GET | `/ext/status` | 200 | Состояние внешнего устройства |
 | POST | `/ext/power` | 200 | Включить/выключить питание внешнего устройства |
 | POST | `/ext/reset` | 200 | Импульс сброса внешнего устройства |
-| GET | `/*` | 200 | Отдача статики из SPIFFS (catch-all) |
+| GET | `/*` | 200 | Отдача встроенного SPA (catch-all) |
 
 ## Коды ошибок и статусы
 
@@ -52,14 +54,15 @@ JSON, если не указано иное.
 | Статус | Когда возвращается |
 |--------|--------------------|
 | `200 OK` | Успех |
-| `202 Accepted` | Асинхронная операция запущена (сканирование Wi-Fi, проверка/установка OTA) |
+| `202 Accepted` | Асинхронная операция запущена (сканирование Wi-Fi, проверка/установка OTA, синхронизация NTP) |
 | `400 Bad Request` | Некорректный JSON, недопустимые значения, пустое тело, path traversal |
 | `401 Unauthorized` | Нет действительной сессии |
 | `403 Forbidden` | Кросс-доменный запрос к защищённому POST-эндпоинту |
 | `404 Not Found` | Ресурс не найден (статика, файл/каталог SD, корень с `Accept: application/json`) |
+| `409 Conflict` | NTP выключен в конфигурации (`POST /system/time`) |
 | `429 Too Many Requests` | Троттлинг сброса внешнего устройства (реже одного импульса в 2 с) |
 | `500 Internal Server Error` | Сбой ввода-вывода / сериализации |
-| `503 Service Unavailable` | Подсистема отключена (например SD или внешнее управление) либо SPIFFS не смонтирован |
+| `503 Service Unavailable` | Подсистема отключена (например SD или внешнее управление) |
 
 ### Машиночитаемые коды в поле `"error"`
 
@@ -74,12 +77,15 @@ JSON, если не указано иное.
 | `PIN_I2C_CONFLICT` | I2C SDA и SCL — один и тот же GPIO |
 | `I2C_CONFLICT` | Одновременно включены INA219 и INA226, либо SHT21 и INA на `0x40` |
 | `ADDR_INVALID` | Адрес INA вне диапазона `0x40`–`0x4F` |
+| `BAUD_INVALID` | `baud_rate` или `uart1_baud_rate` вне белого списка скоростей |
+| `LOG_FMT_INVALID` | `uart0_sd_log_fmt` или `uart1_sd_log_fmt` больше `2` |
 | `PORT_INVALID` | Порт telnet вне диапазона `1`–`65535` |
 | `PORT_CONFLICT` | Оба telnet-моста включены на одном порту |
 | `UART_INVALID` | Telnet-мост включён при выключенном UART |
 | `MQTT_INVALID` | MQTT включён без непустого URL брокера (≤255 символов) |
 | `EXT_INVALID` | `ext_rst_pulse_ms` вне диапазона 10–5000; `ext_pwr_pol` / `ext_rst_pol` не `0`/`1` |
 | `OTA_INVALID` | `ota_check_interval_min` вне диапазона 5–10080 или `ota_url` длиннее 255 символов |
+| `NTP_INVALID` | При включённом NTP `ntp_server` пуст/не проходит белый список; `tz_offset_min` вне диапазона −720…840 |
 
 Помимо кодов, `POST /config` может вернуть `400` с текстовым `"error"`:
 `Invalid JSON`, `Failed to read request body`, `No valid configuration fields
@@ -116,6 +122,7 @@ curl http://192.168.4.1/config
 ```json
 {
   "baud_rate": 115200,
+  "uart1_baud_rate": 9600,
   "uart0_enable": 1,
   "uart1_enable": 1,
   "sd_enable": 1,
@@ -127,6 +134,8 @@ curl http://192.168.4.1/config
   "telnet1_port": 23,
   "uart0_sd_log": 0,
   "uart1_sd_log": 0,
+  "uart0_sd_log_fmt": 1,
+  "uart1_sd_log_fmt": 1,
   "sht21_sd_log": 0,
   "ina219_sd_log": 0,
   "ina226_sd_log": 0,
@@ -151,6 +160,9 @@ curl http://192.168.4.1/config
   "ext_pwr_pol": 1,
   "ext_rst_pol": 0,
   "ext_pwr_state": 0,
+  "ntp_enable": 1,
+  "ntp_server": "pool.ntp.org",
+  "tz_offset_min": 180,
   "pins": {
     "uart0_tx": 16, "uart0_rx": 17,
     "uart1_tx": 4,  "uart1_rx": 5,
@@ -220,8 +232,17 @@ curl -X POST http://192.168.4.1/config \
   -d '{"ota_enable":1,"ota_url":"http://192.168.1.10:8000","ota_check_interval_min":360}'
 ```
 
+Пример: настроить NTP (МСК, UTC+3).
+
+```bash
+curl -X POST http://192.168.4.1/config \
+  -H 'Content-Type: application/json' \
+  -d '{"ntp_enable":1,"ntp_server":"pool.ntp.org","tz_offset_min":180}'
+```
+
 Правила длины строк: `wifi_ssid` ≤ 31, `wifi_password` ≤ 63, `server_url` ≤ 255,
-`mqtt_broker_url` ≤ 255, `mqtt_topic_prefix` ≤ 64, `ota_url` ≤ 255.
+`mqtt_broker_url` ≤ 255, `mqtt_topic_prefix` ≤ 64, `ota_url` ≤ 255,
+`ntp_server` ≤ 63 (`A-Za-z0-9._-`). `tz_offset_min` — целое −720…840.
 
 ## `GET /sensor`
 
@@ -648,6 +669,57 @@ curl -X POST http://192.168.4.1/wifi/disconnect
 {"status":"idle"}
 ```
 
+## `GET /system/time`
+
+Возвращает состояние системных часов и настройки NTP.
+
+```bash
+curl http://192.168.4.1/system/time
+```
+
+```json
+{
+  "epoch_ms": 1762948555123,
+  "uptime_ms": 7254000,
+  "synced": true,
+  "ntp_enable": 1,
+  "ntp_server": "pool.ntp.org",
+  "tz_offset_min": 180
+}
+```
+
+| Поле | Значение |
+|------|----------|
+| `epoch_ms` | CLOCK_REALTIME в миллисекундах. До первой синхронизации — малые значения (время от загрузки). |
+| `uptime_ms` | Миллисекунды с момента загрузки (не зависит от NTP). |
+| `synced` | `true`, если часы содержат правдоподобное реальное время (epoch > 1700000000). |
+| `ntp_enable` | Флаг SNTP из конфигурации. |
+| `ntp_server` | Настроенный NTP-сервер. |
+| `tz_offset_min` | Фиксированное смещение UTC в минутах (применяется к меткам логов, не к `epoch_ms`). |
+
+## `POST /system/time`
+
+Запускает внеочередную синхронизацию: останавливает и заново инициализирует
+SNTP с текущими настройками. Тело запроса не требуется.
+
+```bash
+curl -X POST http://192.168.4.1/system/time
+```
+
+```json
+{"message":"NTP re-sync started"}
+```
+
+Если NTP выключен в конфигурации — `409 Conflict`:
+
+```json
+{"error":"NTP disabled"}
+```
+
+Эндпоинт проверяет `Origin` (CSRF-защита, см. ниже). Новая метка появится в
+логах только после фактического ответа сервера: `synced` в `GET /system/time`
+остаётся `false` до этого момента.
+
 ## `POST /system/reboot`
 
 Подтверждает и перезагружает устройство. Ответ отправляется **до** перезапуска.
@@ -675,8 +747,9 @@ curl -X POST http://192.168.4.1/system/reset
 
 ### CSRF-защита
 
-`/system/reboot`, `/system/reset`, `/ext/power`, `/ext/reset`, `/ota/check` и
-`/ota/update` сравнивают хост из заголовка `Origin` с заголовком `Host`. При
+`/system/reboot`, `/system/reset`, `/system/time`, `/ext/power`, `/ext/reset`,
+`/ota/check` и `/ota/update` сравнивают хост из заголовка `Origin` с заголовком
+`Host`. При
 несовпадении возвращается `403`:
 
 ```json
@@ -771,15 +844,13 @@ curl -X POST http://192.168.4.1/ext/reset
 
 ## Статика `GET /*`
 
-Обработчик catch-all отдаёт файлы из SPIFFS (`.html`, `.css`, `.js`, `.json`,
-`.svg`, `.png`, `.ico`, `.txt`; иначе `application/octet-stream`), с заголовком
-`Cache-Control: no-cache`.
+Обработчик catch-all отдаёт встроенный в образ приложения SPA (`index.html`,
+`text/html`) с заголовком `Cache-Control: no-cache`.
 
-- `GET /` отдаёт `index.html` (SPA), если клиент не просит JSON. С
-  `Accept: application/json` корень возвращает `404` `{"error":"Not Found"}`.
+- `GET /` и `GET /index.html` отдают SPA. С `Accept: application/json` корень
+  возвращает `404` `{"error":"Not Found"}`.
 - Попытки path traversal (`..`) отклоняются с `400`.
-- Если SPIFFS не смонтирован — `503 Web UI storage not mounted`.
-- Отсутствующий файл — `404`.
+- Любой другой путь — `404` (SPA использует hash-маршрутизацию).
 
 ## Заметки о таймаутах и сокетах
 

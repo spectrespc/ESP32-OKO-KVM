@@ -1,10 +1,12 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
 # Custom 4MB layout for the ESP32-C6 Gateway (ESP32-C6FH4, 4MB embedded flash).
 # 32K partition table @0x8000, 24K NVS, 8K otadata, 4K phy_init.
-# A/B OTA scheme: two equal OTA slots (ota_0 + ota_1), then a 640K SPIFFS
-# partition for the web UI. There is no factory slot, so every app image is
-# OTA-writable and updates alternate between the slots. NVS and otadata
-# offsets are unchanged from the pre-OTA layout, so settings survive.
+# A/B OTA scheme: two equal OTA slots (ota_0 + ota_1). The web UI is embedded
+# in the app image, so the trailing 640K "spiffs" partition is reserved/unused
+# (kept so existing devices need no repartitioning). There is no factory slot,
+# so every app image is OTA-writable and updates alternate between the slots.
+# NVS and otadata offsets are unchanged from the pre-OTA layout, so settings
+# survive.
 nvs,      data, nvs,     0x9000,   0x6000,
 otadata,  data, ota,     0xF000,   0x2000,
 phy_init, data, phy,     0x11000,  0x1000,

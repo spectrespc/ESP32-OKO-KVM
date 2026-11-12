@@ -18,7 +18,6 @@
 #include "wifi_scan.h"
 #include "self_test.h"
 #include "telnet_bridge.h"
-#include "web_handlers.h"
 #include "log_handler.h"
 #include "ext_control.h"
 #include "status_led.h"
@@ -120,10 +119,6 @@ void app_main(void)
             ESP_LOGW(TAG, "telnet1_enable set but uart1_enable=0; UART1 bridge not started");
         }
     }
-
-    // Mount the SPIFFS web assets before starting the HTTP server.
-    ESP_LOGI(TAG, "Mounting SPIFFS web assets");
-    init_spiffs();
 
     // Load/create the web credentials before the HTTP server starts serving.
     ESP_LOGI(TAG, "Initializing authentication");

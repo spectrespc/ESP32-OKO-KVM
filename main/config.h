@@ -17,6 +17,22 @@
 #define OTA_CHECK_INTERVAL_MIN         5
 #define OTA_CHECK_INTERVAL_MAX         10080
 
+// NTP defaults. The default UTC offset is +180 minutes (UTC+3, Moscow); DST is
+// not supported, so the offset is a fixed number of minutes.
+#define NTP_SERVER_DEFAULT      "pool.ntp.org"
+#define NTP_SERVER_MAX_LEN      63
+#define TZ_OFFSET_MIN_DEFAULT   180
+#define TZ_OFFSET_MIN_ALLOWED   (-720)
+#define TZ_OFFSET_MAX_ALLOWED   840
+
+// Format of the UART traffic copies written to /sdcard/uarN.log. Raw keeps the
+// previous byte-for-byte behaviour; text/hexdump add a timestamp, direction
+// and escaping (see telnet_bridge.c).
+#define UART_SD_LOG_FMT_RAW     0
+#define UART_SD_LOG_FMT_TEXT    1
+#define UART_SD_LOG_FMT_HEXDUMP 2
+#define UART_SD_LOG_FMT_MAX     UART_SD_LOG_FMT_HEXDUMP
+
 // Reconfigurable GPIO assignments. Every subsystem pin can be overridden via
 // POST /config and is persisted to NVS. Defaults come from PIN_DEFAULT_* in
 // pins.h (see config.c).
@@ -41,7 +57,8 @@ typedef struct {
 
 // Configuration structure
 typedef struct {
-    uint32_t baud_rate;
+    uint32_t baud_rate;        // UART0 baud rate (whitelisted, see config_baud_rate_valid)
+    uint32_t uart1_baud_rate;  // UART1 baud rate (whitelisted, see config_baud_rate_valid)
     uint8_t uart0_enable;
     uint8_t uart1_enable;
     uint8_t sd_enable;
@@ -57,6 +74,9 @@ typedef struct {
     // is mounted the writes are silently skipped.
     uint8_t  uart0_sd_log;     // log UART0 traffic to /sdcard/uar0.log (0/1)
     uint8_t  uart1_sd_log;     // log UART1 traffic to /sdcard/uar1.log (0/1)
+    // Format of those log files: UART_SD_LOG_FMT_RAW/TEXT/HEXDUMP.
+    uint8_t  uart0_sd_log_fmt;
+    uint8_t  uart1_sd_log_fmt;
     // Per-sensor CSV logging; each has its own file and enable flag.
     uint8_t  sht21_sd_log;     // SHT21 temperature + humidity   -> /sdcard/sht21.csv
     uint8_t  ina219_sd_log;    // INA219 voltage + current       -> /sdcard/ina219.csv
@@ -90,6 +110,11 @@ typedef struct {
     uint8_t  ext_pwr_pol;       // 0=active-low, 1=active-high (default: 1)
     uint8_t  ext_rst_pol;       // 0=active-low, 1=active-high (default: 0)
     uint8_t  ext_pwr_state;     // last power state: 0=OFF, 1=ON (persisted)
+    // NTP time synchronization (see ntp_time.c). The server is a fixed buffer
+    // so it can be copied with the plain struct assignment in set_config().
+    uint8_t  ntp_enable;           // 0=off, 1=SNTP enabled (default: 1)
+    char     ntp_server[64];       // hostname, A-Za-z0-9._- (default: pool.ntp.org)
+    int16_t  tz_offset_min;        // fixed UTC offset in minutes, -720..840 (default: 180)
 } app_config_t;
 
 // Configuration functions
@@ -110,6 +135,11 @@ void load_config(void);
 // telnet port, and on success applies + persists it to NVS. On failure it
 // returns false and writes a human-readable reason to err_buf.
 bool config_validate_and_set(app_config_t* candidate, char* err_buf, size_t err_buf_len);
+
+// Whitelisted UART baud rates (8N1). Shared by POST /config validation and the
+// UART driver init fallback, so an unknown/corrupt NVS value never reaches
+// uart_param_config().
+bool config_baud_rate_valid(uint32_t baud);
 
 // Persists the external-device power on/off state to NVS (key "ext_pwr_st") and
 // updates the in-RAM configuration. Used by ext_control.c after driving the

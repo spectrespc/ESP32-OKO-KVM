@@ -2,6 +2,7 @@
 #include "wifi_scan.h"
 #include "auth_handler.h"
 #include "status_led.h"
+#include "ntp_time.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -298,6 +299,9 @@ static void sta_event_handler(void* arg, esp_event_base_t event_base,
                 esp_wifi_get_ps(&ps);
                 ESP_LOGI(TAG, "STA got IP %s (rssi %d dBm, power save %s)",
                          ip, rssi, ps_name(ps));
+                // The network is reachable now; start SNTP exactly once. The
+                // hook is idempotent and a no-op when NTP is disabled.
+                ntp_time_start();
                 break;
             }
 

@@ -18,9 +18,9 @@ CONFIG_ESP_MAIN_TASK_AFFINITY=0
 # Flash size (ESP32-C6FH4 has 4MB embedded flash; default 2MB wastes half).
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
-# Partition table - custom layout with two A/B OTA slots plus a SPIFFS partition
-# for the web UI (see partitions.csv): ota_0 1.625M + ota_1 1.625M + 640K
-# SPIFFS.
+# Partition table - custom layout with two A/B OTA slots (see partitions.csv):
+# ota_0 1.625M + ota_1 1.625M + 640K reserved. The web UI is embedded in the
+# app image, so the trailing data partition is not used any more.
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
@@ -30,7 +30,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # bootloader return to the previous slot.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
-# SPIFFS (used to serve the SPA from flash)
+# SPIFFS (legacy; the web UI is embedded in the app image since 1.7.0)
 CONFIG_SPIFFS_MAX_PARTITIONS=1
 CONFIG_SPIFFS_CACHE=y
 CONFIG_SPIFFS_PAGE_SIZE=256
@@ -49,6 +49,10 @@ CONFIG_FATFS_USE_LABEL=y
 # Logging (0=None, 1=Error, 2=Warn, 3=Info, 4=Debug, 5=Verbose)
 CONFIG_LOG_DEFAULT_LEVEL=3
 CONFIG_LOG_COLORS=y
+# Timestamps come from the system clock instead of the FreeRTOS tick counter, so
+# ESP_LOG lines show the wall-clock time (UTC) once SNTP has synced. Before the
+# first sync the values are small (time since boot).
+CONFIG_LOG_TIMESTAMP_SOURCE_SYSTEM=y
 
 # MQTT over TLS (mqtts://) uses the default CA bundle from mbedTLS.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y

@@ -2,6 +2,7 @@
 #include "config.h"
 #include "pins.h"
 #include "pin_validation.h"
+#include "ntp_time.h"
 #include "esp_log.h"
 #include "esp_app_desc.h"
 #include "esp_timer.h"
@@ -85,6 +86,15 @@ static void set_ota_defaults(void)
     app_config.ota_check_interval_min = OTA_CHECK_INTERVAL_MIN_DEFAULT;
 }
 
+// NTP defaults. Used when NVS is unavailable so a later config save/validate
+// still sees a valid hostname and an in-range offset.
+static void set_ntp_defaults(void)
+{
+    app_config.ntp_enable = 1;
+    strlcpy(app_config.ntp_server, NTP_SERVER_DEFAULT, sizeof(app_config.ntp_server));
+    app_config.tz_offset_min = TZ_OFFSET_MIN_DEFAULT;
+}
+
 void init_config(void)
 {
     // Note: nvs_flash_init() is called in main.c already
@@ -96,6 +106,7 @@ void init_config(void)
         set_pin_defaults(&app_config.pins);
         set_ext_defaults();
         set_ota_defaults();
+        set_ntp_defaults();
         return;
     }
 
@@ -117,6 +128,7 @@ static cJSON* build_config_object(void)
     }
 
     cJSON_AddNumberToObject(root, "baud_rate", app_config.baud_rate);
+    cJSON_AddNumberToObject(root, "uart1_baud_rate", app_config.uart1_baud_rate);
     cJSON_AddNumberToObject(root, "uart0_enable", app_config.uart0_enable);
     cJSON_AddNumberToObject(root, "uart1_enable", app_config.uart1_enable);
     cJSON_AddNumberToObject(root, "sd_enable", app_config.sd_enable);
@@ -128,6 +140,8 @@ static cJSON* build_config_object(void)
     cJSON_AddNumberToObject(root, "telnet1_port", app_config.telnet1_port);
     cJSON_AddNumberToObject(root, "uart0_sd_log", app_config.uart0_sd_log);
     cJSON_AddNumberToObject(root, "uart1_sd_log", app_config.uart1_sd_log);
+    cJSON_AddNumberToObject(root, "uart0_sd_log_fmt", app_config.uart0_sd_log_fmt);
+    cJSON_AddNumberToObject(root, "uart1_sd_log_fmt", app_config.uart1_sd_log_fmt);
     cJSON_AddNumberToObject(root, "sht21_sd_log", app_config.sht21_sd_log);
     cJSON_AddNumberToObject(root, "ina219_sd_log", app_config.ina219_sd_log);
     cJSON_AddNumberToObject(root, "ina226_sd_log", app_config.ina226_sd_log);
@@ -157,6 +171,9 @@ static cJSON* build_config_object(void)
     cJSON_AddNumberToObject(root, "ext_pwr_pol", app_config.ext_pwr_pol);
     cJSON_AddNumberToObject(root, "ext_rst_pol", app_config.ext_rst_pol);
     cJSON_AddNumberToObject(root, "ext_pwr_state", app_config.ext_pwr_state);
+    cJSON_AddNumberToObject(root, "ntp_enable", app_config.ntp_enable);
+    cJSON_AddStringToObject(root, "ntp_server", app_config.ntp_server);
+    cJSON_AddNumberToObject(root, "tz_offset_min", app_config.tz_offset_min);
 
     cJSON* pins = cJSON_CreateObject();
     if (pins) {
@@ -208,9 +225,10 @@ char* get_config_export_json(void)
     }
     cJSON_AddNumberToObject(root, "format", 1);
     cJSON_AddStringToObject(root, "firmware_version", desc ? desc->version : "");
-    // No RTC/SNTP on this device: report seconds since boot instead.
-    cJSON_AddNumberToObject(root, "exported_at",
-                            (double)(esp_timer_get_time() / 1000000));
+    // Unix seconds once SNTP has set the clock; before the first successful
+    // sync ntp_time_ms() falls back to the uptime clock, so this is seconds
+    // since boot for early exports.
+    cJSON_AddNumberToObject(root, "exported_at", (double)(ntp_time_ms() / 1000));
     cJSON_AddItemToObject(root, "config", config);
 
     char* out = cJSON_PrintUnformatted(root);
@@ -286,6 +304,42 @@ static bool ota_url_valid(const char* url)
     return true;
 }
 
+// Validates the NTP hostname: 1-63 characters from a conservative whitelist
+// (letters, digits, dot, dash, underscore). This accepts dotted hostnames and
+// IPv4 literals while rejecting anything sntp's DNS lookup could choke on.
+static bool ntp_server_valid(const char* server)
+{
+    if (!server || server[0] == '\0') {
+        return false;
+    }
+    size_t len = strlen(server);
+    if (len > NTP_SERVER_MAX_LEN) {
+        return false;
+    }
+    for (const char* p = server; *p; p++) {
+        char c = *p;
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool config_baud_rate_valid(uint32_t baud)
+{
+    static const uint32_t whitelist[] = {
+        1200, 2400, 4800, 9600, 19200, 38400,
+        57600, 115200, 230400, 460800, 921600,
+    };
+    for (size_t i = 0; i < sizeof(whitelist) / sizeof(whitelist[0]); i++) {
+        if (whitelist[i] == baud) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool config_validate_and_set(app_config_t* candidate, char* err_buf, size_t err_buf_len)
 {
     if (!candidate) {
@@ -334,6 +388,39 @@ bool config_validate_and_set(app_config_t* candidate, char* err_buf, size_t err_
     if (candidate->telnet1_enable && !candidate->uart1_enable) {
         if (err_buf && err_buf_len) {
             snprintf(err_buf, err_buf_len, "UART_INVALID: telnet1_enable requires uart1_enable");
+        }
+        return false;
+    }
+
+    // Baud rates must come from the whitelist: the driver applies them after a
+    // reboot and cannot recover from an arbitrary value.
+    if (!config_baud_rate_valid(candidate->baud_rate)) {
+        if (err_buf && err_buf_len) {
+            snprintf(err_buf, err_buf_len, "BAUD_INVALID: baud_rate=%u",
+                     (unsigned)candidate->baud_rate);
+        }
+        return false;
+    }
+    if (!config_baud_rate_valid(candidate->uart1_baud_rate)) {
+        if (err_buf && err_buf_len) {
+            snprintf(err_buf, err_buf_len, "BAUD_INVALID: uart1_baud_rate=%u",
+                     (unsigned)candidate->uart1_baud_rate);
+        }
+        return false;
+    }
+
+    // SD log format: 0=raw, 1=text, 2=hexdump (see UART_SD_LOG_FMT_*).
+    if (candidate->uart0_sd_log_fmt > UART_SD_LOG_FMT_MAX) {
+        if (err_buf && err_buf_len) {
+            snprintf(err_buf, err_buf_len,
+                     "LOG_FMT_INVALID: uart0_sd_log_fmt must be 0-%d", UART_SD_LOG_FMT_MAX);
+        }
+        return false;
+    }
+    if (candidate->uart1_sd_log_fmt > UART_SD_LOG_FMT_MAX) {
+        if (err_buf && err_buf_len) {
+            snprintf(err_buf, err_buf_len,
+                     "LOG_FMT_INVALID: uart1_sd_log_fmt must be 0-%d", UART_SD_LOG_FMT_MAX);
         }
         return false;
     }
@@ -441,6 +528,26 @@ bool config_validate_and_set(app_config_t* candidate, char* err_buf, size_t err_
         return false;
     }
 
+    // NTP: an enabled client needs a usable hostname, and the fixed UTC offset
+    // must stay in the documented range (UTC-12:00 .. UTC+14:00).
+    if (candidate->ntp_enable && !ntp_server_valid(candidate->ntp_server)) {
+        if (err_buf && err_buf_len) {
+            snprintf(err_buf, err_buf_len,
+                     "NTP_INVALID: ntp_server must be 1-%d chars of A-Za-z0-9._- "
+                     "when NTP is enabled", NTP_SERVER_MAX_LEN);
+        }
+        return false;
+    }
+    if (candidate->tz_offset_min < TZ_OFFSET_MIN_ALLOWED ||
+        candidate->tz_offset_min > TZ_OFFSET_MAX_ALLOWED) {
+        if (err_buf && err_buf_len) {
+            snprintf(err_buf, err_buf_len,
+                     "NTP_INVALID: tz_offset_min must be %d-%d",
+                     TZ_OFFSET_MIN_ALLOWED, TZ_OFFSET_MAX_ALLOWED);
+        }
+        return false;
+    }
+
     set_config(candidate);
     return true;
 }
@@ -455,6 +562,11 @@ void save_config(void)
     esp_err_t err = nvs_set_u32(s_nvs_handle, "baud_rate", app_config.baud_rate);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save baud_rate: %s", esp_err_to_name(err));
+    }
+
+    err = nvs_set_u32(s_nvs_handle, "u1_baud", app_config.uart1_baud_rate);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save u1_baud: %s", esp_err_to_name(err));
     }
 
     err = nvs_set_u8(s_nvs_handle, "uart0_enable", app_config.uart0_enable);
@@ -496,9 +608,11 @@ void save_config(void)
         ESP_LOGE(TAG, "Failed to save telnet1_port: %s", esp_err_to_name(err));
     }
 
-    // Optional SD logging flags.
+    // Optional SD logging flags and per-UART log formats.
     save_u8(s_nvs_handle, "u0_sd_log", app_config.uart0_sd_log);
     save_u8(s_nvs_handle, "u1_sd_log", app_config.uart1_sd_log);
+    save_u8(s_nvs_handle, "u0_log_fmt", app_config.uart0_sd_log_fmt);
+    save_u8(s_nvs_handle, "u1_log_fmt", app_config.uart1_sd_log_fmt);
     save_u8(s_nvs_handle, "sht21_sd", app_config.sht21_sd_log);
     save_u8(s_nvs_handle, "ina219_sd", app_config.ina219_sd_log);
     save_u8(s_nvs_handle, "ina226_sd", app_config.ina226_sd_log);
@@ -593,6 +707,17 @@ void save_config(void)
         }
     }
 
+    // NTP time synchronization.
+    save_u8(s_nvs_handle, "ntp_en", app_config.ntp_enable);
+    err = nvs_set_str(s_nvs_handle, "ntp_srv", app_config.ntp_server);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save ntp_srv: %s", esp_err_to_name(err));
+    }
+    err = nvs_set_i16(s_nvs_handle, "tz_min", app_config.tz_offset_min);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save tz_min: %s", esp_err_to_name(err));
+    }
+
     err = nvs_commit(s_nvs_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit NVS: %s", esp_err_to_name(err));
@@ -607,6 +732,7 @@ void load_config(void)
         set_pin_defaults(&app_config.pins);
         set_ext_defaults();
         set_ota_defaults();
+        set_ntp_defaults();
         return;
     }
 
@@ -623,6 +749,11 @@ void load_config(void)
     esp_err_t err = nvs_get_u32(s_nvs_handle, "baud_rate", &app_config.baud_rate);
     if (err != ESP_OK) {
         app_config.baud_rate = 115200; // Default value
+    }
+
+    err = nvs_get_u32(s_nvs_handle, "u1_baud", &app_config.uart1_baud_rate);
+    if (err != ESP_OK) {
+        app_config.uart1_baud_rate = 9600; // Default value (UART1_CONFIG_BAUD_RATE)
     }
 
     err = nvs_get_u8(s_nvs_handle, "uart0_enable", &app_config.uart0_enable);
@@ -728,6 +859,16 @@ void load_config(void)
     if (nvs_get_u8(s_nvs_handle, "u1_sd_log", &app_config.uart1_sd_log) != ESP_OK) {
         app_config.uart1_sd_log = 0;
     }
+    // Log format per UART: readable text by default. A stale/corrupt value is
+    // clamped here so the formatter only ever sees a known mode.
+    if (nvs_get_u8(s_nvs_handle, "u0_log_fmt", &app_config.uart0_sd_log_fmt) != ESP_OK ||
+        app_config.uart0_sd_log_fmt > UART_SD_LOG_FMT_MAX) {
+        app_config.uart0_sd_log_fmt = UART_SD_LOG_FMT_TEXT;
+    }
+    if (nvs_get_u8(s_nvs_handle, "u1_log_fmt", &app_config.uart1_sd_log_fmt) != ESP_OK ||
+        app_config.uart1_sd_log_fmt > UART_SD_LOG_FMT_MAX) {
+        app_config.uart1_sd_log_fmt = UART_SD_LOG_FMT_TEXT;
+    }
     if (nvs_get_u8(s_nvs_handle, "sht21_sd", &app_config.sht21_sd_log) != ESP_OK) {
         app_config.sht21_sd_log = 0;
     }
@@ -755,6 +896,24 @@ void load_config(void)
         app_config.ota_check_interval_min < OTA_CHECK_INTERVAL_MIN ||
         app_config.ota_check_interval_min > OTA_CHECK_INTERVAL_MAX) {
         app_config.ota_check_interval_min = OTA_CHECK_INTERVAL_MIN_DEFAULT;
+    }
+
+    // NTP time synchronization: enabled with the public pool and a UTC+3
+    // offset by default. A stale/corrupt server or offset falls back to the
+    // defaults so SNTP never receives an unusable hostname.
+    if (nvs_get_u8(s_nvs_handle, "ntp_en", &app_config.ntp_enable) != ESP_OK ||
+        app_config.ntp_enable > 1) {
+        app_config.ntp_enable = 1;
+    }
+    size_t ntp_len = sizeof(app_config.ntp_server);
+    if (nvs_get_str(s_nvs_handle, "ntp_srv", app_config.ntp_server, &ntp_len) != ESP_OK ||
+        !ntp_server_valid(app_config.ntp_server)) {
+        strlcpy(app_config.ntp_server, NTP_SERVER_DEFAULT, sizeof(app_config.ntp_server));
+    }
+    if (nvs_get_i16(s_nvs_handle, "tz_min", &app_config.tz_offset_min) != ESP_OK ||
+        app_config.tz_offset_min < TZ_OFFSET_MIN_ALLOWED ||
+        app_config.tz_offset_min > TZ_OFFSET_MAX_ALLOWED) {
+        app_config.tz_offset_min = TZ_OFFSET_MIN_DEFAULT;
     }
 
     // I2C bus and sensors: bus off and no sensors by default; INA addresses

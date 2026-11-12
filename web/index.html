@@ -403,6 +403,20 @@ function badge(text, kind){
 }
 function enableBadge(v){ return v ? badge("enabled","ok") : badge("disabled","off"); }
 
+/* Format epoch milliseconds in the device's fixed UTC offset (no DST). */
+function fmtDeviceTime(epochMs, tzMin){
+  if (typeof epochMs !== "number") return "—";
+  const d = new Date(epochMs + (Number(tzMin) || 0) * 60000);
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ` +
+         `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+function fmtUptime(ms){
+  const s = Math.floor((Number(ms) || 0) / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return `${h}h ${m}m ${s % 60}s`;
+}
+
 /* =============================================================== DASHBOARD */
 function renderDashboard(){
   pageEl.innerHTML = `<h2>Dashboard</h2>
@@ -436,14 +450,15 @@ function renderDashboard(){
     () => systemAction("/system/reset", "Resetting…")));
 
   async function refresh(){
-    const [cfgR, sensR, sdR, wifiR, extR] = await Promise.all([
+    const [cfgR, sensR, sdR, wifiR, extR, timeR] = await Promise.all([
       fetchJSON("GET", "/config"),
       fetchJSON("GET", "/sensor"),
       fetchJSON("GET", "/sd/status"),
       fetchJSON("GET", "/wifi/status"),
       fetchJSON("GET", "/ext/status"),
+      fetchJSON("GET", "/system/time"),
     ]);
-    renderSubsystems(cfgR, sdR, wifiR);
+    renderSubsystems(cfgR, sdR, wifiR, timeR);
     renderSensorReadings(sensR);
     renderDashboardExternal(extR);
   }
@@ -488,7 +503,7 @@ function renderDashboardExternal(extR){
     }));
 }
 
-function renderSubsystems(cfgR, sdR, wifiR){
+function renderSubsystems(cfgR, sdR, wifiR, timeR){
   const cfg = cfgR.ok ? cfgR.data : {};
   const wifi = (wifiR && wifiR.ok && wifiR.data) ? wifiR.data : {};
   const sub = $("#dash-sub");
@@ -530,13 +545,28 @@ function renderSubsystems(cfgR, sdR, wifiR){
               : sdReady ? "ready"
               : (sdR.data && sdR.data.error) ? sdR.data.error : "unavailable";
   const sdKind = !cfg.sd_enable ? "off" : sdReady ? "ok" : "err";
+  const t = (timeR && timeR.ok && timeR.data) ? timeR.data : null;
+  const timeBadge = !t ? badge("unavailable","err")
+                  : t.synced ? badge("synced","ok") : badge("unsynced","warn");
+  const timeText = !t ? "—"
+                  : t.synced ? fmtDeviceTime(t.epoch_ms, t.tz_offset_min)
+                  : "uptime " + fmtUptime(t.uptime_ms);
   st.innerHTML = `
     <div class="status-row"><span>Configuration API</span>${cfgR.ok ? badge("reachable","ok") : badge("error","err")}</div>
     <div class="status-row"><span>SD card</span>${badge(sdTxt, sdKind)}</div>
     <div class="status-row"><span>Telnet UART0</span><span class="muted">${cfg.telnet0_enable ? "port "+cfg.telnet0_port : "disabled"}</span></div>
     <div class="status-row"><span>Telnet UART1</span><span class="muted">${cfg.telnet1_enable ? "port "+cfg.telnet1_port : "disabled"}</span></div>
     <div class="status-row"><span>MQTT</span><span class="muted">${cfg.mqtt_enable ? escapeHtml(cfg.mqtt_broker_url || "no URL") : "off"}</span></div>
-    <div class="status-row"><span>Server URL</span><span class="muted">${escapeHtml(cfg.server_url || "—")}</span></div>`;
+    <div class="status-row"><span>Server URL</span><span class="muted">${escapeHtml(cfg.server_url || "—")}</span></div>
+    <div class="status-row"><span>Time</span><span style="display:flex;align-items:center;gap:8px">${timeBadge}<span class="muted">${escapeHtml(timeText)}</span><button class="btn ghost" id="dash-time-sync" style="padding:2px 8px;font-size:12px" ${t && t.ntp_enable ? "" : "disabled"}>Sync now</button></span></div>`;
+
+  const syncBtn = $("#dash-time-sync");
+  if (syncBtn) syncBtn.addEventListener("click", async () => {
+    const res = await fetchJSON("POST", "/system/time", {});
+    toast(res.ok ? ((res.data && res.data.message) || "NTP re-sync started")
+                 : ("Failed: " + ((res.data && res.data.error) || ("HTTP " + res.status))),
+          res.ok ? "ok" : "err");
+  });
 }
 
 /* Fixed-point sensor fields are scaled here to engineering units:
@@ -590,6 +620,8 @@ const ENABLE_FIELDS = [
   ["sht21_sd_log","SD log SHT21"],["ina219_sd_log","SD log INA219"],
   ["ina226_sd_log","SD log INA226"],["env_sd_log","SD log env"],
 ];
+/* UART baud rates accepted by POST /config (keep in sync with config.c). */
+const BAUD_RATES = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
 
 /* Hardcoded ESP32-C6 GPIO table (0-22). GPIO12/13 are the native USB D-/D+
    lines (reserved while the USB Serial/JTAG console is active); GPIO2/8/9 are
@@ -703,10 +735,34 @@ async function renderConfig(){
       <td class="muted">${key}</td></tr>`;
   }).join("");
 
+  const baudSelect = (key,label,def) => {
+    const cur = Number(cfg[key]) || def;
+    const rates = BAUD_RATES.includes(cur) ? BAUD_RATES : [cur, ...BAUD_RATES];
+    const opts = rates.map(r =>
+      `<option value="${r}"${r === cur ? " selected" : ""}>${r}</option>`).join("");
+    return `<div class="field"><label>${label}</label>
+      <select id="cfg_${key}">${opts}</select></div>`;
+  };
+
+  /* SD log format values match UART_SD_LOG_FMT_* in config.h. */
+  const SD_LOG_FORMATS = [["0","Raw bytes"],["1","Text"],["2","Hexdump"]];
+  const fmtSelect = (key,label) => {
+    const n = Number(cfg[key]);
+    const cur = (n >= 0 && n <= 2) ? n : 1;
+    const opts = SD_LOG_FORMATS.map(([v,l]) =>
+      `<option value="${v}"${Number(v) === cur ? " selected" : ""}>${l}</option>`).join("");
+    return `<div class="field"><label>${label}</label>
+      <select id="cfg_${key}">${opts}</select></div>`;
+  };
+  const uartLogFmtHtml = fmtSelect("uart0_sd_log_fmt","UART0 SD log format")
+    + fmtSelect("uart1_sd_log_fmt","UART1 SD log format");
+
   pageEl.innerHTML = `<h2>Configuration</h2>
     <form id="cfg-form">
       <div class="grid cols-2">
-        <div class="card"><h3>Subsystems</h3>${toggleHtml}</div>
+        <div class="card"><h3>Subsystems</h3>${toggleHtml}${uartLogFmtHtml}
+          <p class="muted" style="margin:8px 0 0">UART traffic logs are written only while a Telnet client is connected. Log format applies after reboot.</p>
+        </div>
         <div class="card">
           <h3>Network &amp; services</h3>
           <div class="field"><label>WiFi AP SSID</label>
@@ -715,10 +771,23 @@ async function renderConfig(){
             <input type="password" id="cfg_wifi_password" placeholder="••••••••"></div>
           <div class="field"><label>Server URL</label>
             <input type="text" id="cfg_server_url" value="${escapeHtml(cfg.server_url || "")}"></div>
+          ${baudSelect("baud_rate","UART0 baud rate",115200)}
+          ${baudSelect("uart1_baud_rate","UART1 baud rate",9600)}
+          <p class="muted" style="margin:8px 0 0">Baud rates apply after reboot.</p>
           <div class="field"><label>Telnet UART0 port</label>
             <input type="number" min="1" max="65535" id="cfg_telnet0_port" value="${cfg.telnet0_port || 2323}"></div>
           <div class="field"><label>Telnet UART1 port</label>
             <input type="number" min="1" max="65535" id="cfg_telnet1_port" value="${cfg.telnet1_port || 23}"></div>
+          <div class="toggle">
+            <span>NTP time sync</span>
+            <label class="switch"><input type="checkbox" id="cfg_ntp_enable" ${cfg.ntp_enable ? "checked":""}><span class="slider"></span></label>
+          </div>
+          <div class="field"><label>NTP server</label>
+            <input type="text" id="cfg_ntp_server" value="${escapeHtml(cfg.ntp_server || "")}" placeholder="pool.ntp.org"></div>
+          <div class="field"><label>UTC offset (min, -720 to 840)</label>
+            <input type="number" min="-720" max="840" id="cfg_tz_offset_min"
+                   value="${cfg.tz_offset_min === undefined ? 180 : cfg.tz_offset_min}"></div>
+          <p class="muted" style="margin:8px 0 0">NTP enable and server apply after reboot; the UTC offset is applied immediately. DST is not supported.</p>
         </div>
       </div>
       <div class="card section" style="margin-top:16px">
@@ -814,6 +883,22 @@ async function renderConfig(){
     }
     payload.telnet0_port = parseInt($("#cfg_telnet0_port").value, 10);
     payload.telnet1_port = parseInt($("#cfg_telnet1_port").value, 10);
+    const baud0 = parseInt($("#cfg_baud_rate").value, 10);
+    const baud1 = parseInt($("#cfg_uart1_baud_rate").value, 10);
+    if (isNaN(baud0) || isNaN(baud1)){
+      toast("UART baud rate must be selected.", "err");
+      return;
+    }
+    payload.baud_rate = baud0;
+    payload.uart1_baud_rate = baud1;
+    const sdFmt0 = parseInt($("#cfg_uart0_sd_log_fmt").value, 10);
+    const sdFmt1 = parseInt($("#cfg_uart1_sd_log_fmt").value, 10);
+    if (![0,1,2].includes(sdFmt0) || ![0,1,2].includes(sdFmt1)){
+      toast("SD log format must be Raw, Text or Hexdump.", "err");
+      return;
+    }
+    payload.uart0_sd_log_fmt = sdFmt0;
+    payload.uart1_sd_log_fmt = sdFmt1;
     payload.ext_pwr_enable = $("#cfg_ext_pwr_enable").checked ? 1 : 0;
     payload.ext_rst_enable = $("#cfg_ext_rst_enable").checked ? 1 : 0;
     payload.ext_pwr_pol = $('input[name="ext_pwr_pol"]:checked').value === "1" ? 1 : 0;
@@ -836,6 +921,19 @@ async function renderConfig(){
       return;
     }
     payload.ota_check_interval_min = otaInterval;
+    payload.ntp_enable = $("#cfg_ntp_enable").checked ? 1 : 0;
+    const ntpServer = ($("#cfg_ntp_server").value || "").trim();
+    if (payload.ntp_enable && !/^[A-Za-z0-9._-]{1,63}$/.test(ntpServer)){
+      toast("NTP server must be a hostname (A-Za-z0-9._-, max 63 chars).", "err");
+      return;
+    }
+    payload.ntp_server = ntpServer;
+    const tzOffset = parseInt($("#cfg_tz_offset_min").value, 10);
+    if (isNaN(tzOffset) || tzOffset < -720 || tzOffset > 840){
+      toast("UTC offset must be between -720 and 840 minutes.", "err");
+      return;
+    }
+    payload.tz_offset_min = tzOffset;
     const pw = $("#cfg_wifi_password").value;
     if (pw) payload.wifi_password = pw;
     PIN_FIELDS.forEach(([key]) => payload.pins[key] = parseInt($("#pin_"+key).value, 10) || 0);

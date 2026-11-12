@@ -2,6 +2,7 @@
 #include "sensor_handler.h"
 #include "config.h"
 #include "sd_handler.h"
+#include "ntp_time.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "mqtt_client.h"
@@ -212,7 +213,9 @@ static void sensor_log_task(void* arg)
             continue;
         }
 
-        int64_t now = esp_timer_get_time() / 1000LL;
+        // Epoch milliseconds after the first SNTP sync, otherwise uptime
+        // milliseconds: the CSV header keeps the generic name ts_ms.
+        int64_t now = ntp_time_ms();
         char line[128];
 
         // SHT21: temperature + humidity.

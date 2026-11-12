@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-11-12
+
+### Added
+- NTP client: `ntp_enable`, `ntp_server` (default `pool.ntp.org`) and
+  `tz_offset_min` (default 180 = Moscow time, a fixed UTC offset without DST).
+  Synchronization starts on the first STA IP lease and polls hourly.
+  `GET /system/time` reports the clock state and `POST /system/time` triggers
+  an out-of-schedule synchronization.
+- NTP controls in the "Network & services" card, plus a "Time" row with a
+  synced/unsynced badge and a "Sync now" button on the Dashboard.
+- Real timestamps in `uarN.log` (`[YYYY-MM-DD HH:MM:SS.mmm]`), sensor CSVs
+  (`ts_ms` in epoch milliseconds), `exported_at` (epoch seconds) and ESP_LOG
+  system lines (`CONFIG_LOG_TIMESTAMP_SOURCE_SYSTEM`).
+- `NTP_INVALID` validation code for an unusable `ntp_server` while NTP is
+  enabled and for `tz_offset_min` outside −720…840.
+- `GET /system/time` and `POST /system/time` cases in the shared HTTP test set.
+
+### Changed
+- Log timestamp format: real time is used after the first SNTP sync and uptime
+  before it; mixed stamps early in the device lifetime are expected. The time
+  zone is a fixed offset in minutes; DST is not supported.
+- ESP_LOG system lines use the system clock instead of the FreeRTOS tick
+  counter: before synchronization the timestamp is a small uptime value.
+
+## [1.7.0] — 2026-11-12
+
+### Added
+- Selectable SD log format for UART traffic: `uart0_sd_log_fmt`/`uart1_sd_log_fmt`
+  (NVS keys `u0_log_fmt`/`u1_log_fmt`) with raw/text/hexdump values and matching
+  selects in the web UI.
+- Readable text log format: a `[<ms>ms] RX:` / `[<ms>ms] TX:` prefix and `\xNN`
+  for non-printable bytes; hexdump uses 16-byte lines with an ASCII column.
+- `LOG_FMT_INVALID` error code for a log format above `2`.
+
+### Changed
+- The web UI (`web/index.html`) is embedded in the application image and served
+  from flash instead of a separate SPIFFS partition. Every OTA update now ships
+  both the REST API and the web UI, so no USB flash is needed for UI changes and
+  the API and page versions can no longer drift apart.
+- The 640K `spiffs` partition is no longer used and remains reserved, so the
+  partition table of already-installed devices does not change.
+- The default `/sdcard/uarN.log` format is readable text instead of raw bytes.
+  Scripts that parsed the raw dump must explicitly set `uart0_sd_log_fmt`/
+  `uart1_sd_log_fmt` to `0`.
+
+## [1.6.0] — 2026-11-12
+
+### Fixed
+- `baud_rate` was ignored: UART0 always ran at 115200. The saved rate is now
+  applied on boot.
+
+### Added
+- `uart1_baud_rate` field (NVS key `u1_baud`) for the UART1 baud rate,
+  defaulting to 9600.
+- UART0/UART1 baud rate selection in the web UI (Network & services card).
+- `BAUD_INVALID` error code for rates outside the whitelist; the driver falls
+  back to the default rate and logs a warning when NVS holds a bad value.
+
 ## [1.5.0] — 2026-11-10
 
 ### Added

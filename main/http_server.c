@@ -13,14 +13,17 @@
 #include "ext_control.h"
 #include "auth_handler.h"
 #include "ota_handler.h"
+#include "ntp_time.h"
 #include "cJSON.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <sys/time.h>
 
 static const char* TAG = "http_server";
 static httpd_handle_t server = NULL;
@@ -134,6 +137,23 @@ static bool get_json_u32(cJSON* root, const char* key, uint32_t* out,
         return false;
     }
     *out = (uint32_t)v;
+    return true;
+}
+
+// Range-bounded signed 16-bit field (e.g. the fixed UTC offset in minutes).
+static bool get_json_i16(cJSON* root, const char* key, int16_t* out,
+                         int min, int max, bool* invalid)
+{
+    cJSON* it = cJSON_GetObjectItem(root, key);
+    if (!it || !cJSON_IsNumber(it)) {
+        return false;
+    }
+    double v = it->valuedouble;
+    if (v != (double)(int64_t)v || v < (double)min || v > (double)max) {
+        *invalid = true;
+        return false;
+    }
+    *out = (int16_t)v;
     return true;
 }
 
@@ -304,6 +324,10 @@ static esp_err_t handle_post_config(httpd_req_t *req)
 
     bool touched = false;
     bool invalid = false;
+    touched |= get_json_u32(root, "baud_rate", &candidate.baud_rate,
+                            0, UINT32_MAX, &invalid);
+    touched |= get_json_u32(root, "uart1_baud_rate", &candidate.uart1_baud_rate,
+                            0, UINT32_MAX, &invalid);
     touched |= get_json_u8(root, "uart0_enable", &candidate.uart0_enable, &invalid);
     touched |= get_json_u8(root, "uart1_enable", &candidate.uart1_enable, &invalid);
     touched |= get_json_u8(root, "sd_enable", &candidate.sd_enable, &invalid);
@@ -315,6 +339,10 @@ static esp_err_t handle_post_config(httpd_req_t *req)
     touched |= get_json_u16(root, "telnet1_port", &candidate.telnet1_port, &invalid);
     touched |= get_json_u8(root, "uart0_sd_log", &candidate.uart0_sd_log, &invalid);
     touched |= get_json_u8(root, "uart1_sd_log", &candidate.uart1_sd_log, &invalid);
+    // 0=raw, 1=text, 2=hexdump; values above the range are rejected later with
+    // LOG_FMT_INVALID by config_validate_and_set().
+    touched |= get_json_byte(root, "uart0_sd_log_fmt", &candidate.uart0_sd_log_fmt, &invalid);
+    touched |= get_json_byte(root, "uart1_sd_log_fmt", &candidate.uart1_sd_log_fmt, &invalid);
     touched |= get_json_u8(root, "sht21_sd_log", &candidate.sht21_sd_log, &invalid);
     touched |= get_json_u8(root, "ina219_sd_log", &candidate.ina219_sd_log, &invalid);
     touched |= get_json_u8(root, "ina226_sd_log", &candidate.ina226_sd_log, &invalid);
@@ -345,6 +373,25 @@ static esp_err_t handle_post_config(httpd_req_t *req)
     touched |= get_json_u8(root, "ina226_enable", &candidate.ina226_enable, &invalid);
     touched |= get_json_byte(root, "ina219_addr", &candidate.ina219_addr, &invalid);
     touched |= get_json_byte(root, "ina226_addr", &candidate.ina226_addr, &invalid);
+
+    // NTP time synchronization. ntp_server is a fixed-size buffer (not a heap
+    // string), so it is copied here with an explicit length check. The UTC
+    // offset is parsed as a full int16 and range-checked by
+    // config_validate_and_set() so out-of-range values report NTP_INVALID.
+    touched |= get_json_u8(root, "ntp_enable", &candidate.ntp_enable, &invalid);
+    touched |= get_json_i16(root, "tz_offset_min", &candidate.tz_offset_min,
+                            INT16_MIN, INT16_MAX, &invalid);
+    bool ntp_server_long = false;
+    cJSON* ntp_srv = cJSON_GetObjectItem(root, "ntp_server");
+    if (ntp_srv && cJSON_IsString(ntp_srv) && ntp_srv->valuestring) {
+        size_t ntp_len = strlen(ntp_srv->valuestring);
+        if (ntp_len > NTP_SERVER_MAX_LEN) {
+            ntp_server_long = true;
+        } else {
+            memcpy(candidate.ntp_server, ntp_srv->valuestring, ntp_len + 1);
+            touched = true;
+        }
+    }
 
     cJSON* pins = cJSON_GetObjectItem(root, "pins");
     if (pins && cJSON_IsObject(pins)) {
@@ -382,7 +429,8 @@ static esp_err_t handle_post_config(httpd_req_t *req)
                     (url_set && strlen(candidate.server_url) > 255) ||
                     (mqtt_url_set && strlen(candidate.mqtt_broker_url) > 255) ||
                     (mqtt_topic_set && strlen(candidate.mqtt_topic_prefix) > 64) ||
-                    (ota_url_set && strlen(candidate.ota_url) > 255);
+                    (ota_url_set && strlen(candidate.ota_url) > 255) ||
+                    ntp_server_long;
 
     char err[192] = { 0 };
     bool ok = false;
@@ -390,7 +438,7 @@ static esp_err_t handle_post_config(httpd_req_t *req)
         snprintf(err, sizeof(err), "Numeric value out of range");
     } else if (too_long) {
         snprintf(err, sizeof(err),
-                 "String too long (wifi_ssid<=31, wifi_password<=63, server_url<=255, mqtt_broker_url<=255, mqtt_topic_prefix<=64, ota_url<=255)");
+                 "String too long (wifi_ssid<=31, wifi_password<=63, server_url<=255, mqtt_broker_url<=255, mqtt_topic_prefix<=64, ota_url<=255, ntp_server<=63)");
     } else if (!touched) {
         snprintf(err, sizeof(err), "No valid configuration fields provided");
     } else {
@@ -727,6 +775,52 @@ static esp_err_t handle_post_ota_slot(httpd_req_t *req)
     return reply; // not reached
 }
 
+static esp_err_t handle_get_system_time(httpd_req_t *req)
+{
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
+    const app_config_t* cfg = get_config();
+
+    // epoch_ms is the raw CLOCK_REALTIME value (small numbers until SNTP has
+    // set it); uptime_ms always counts from boot. "synced" is the authoritative
+    // flag for clients that want real timestamps.
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    int64_t epoch_ms = (int64_t)tv.tv_sec * 1000LL + tv.tv_usec / 1000;
+    int64_t uptime_ms = (int64_t)(esp_timer_get_time() / 1000);
+    bool synced = ntp_time_synced();
+
+    char json[256];
+    snprintf(json, sizeof(json),
+             "{\"epoch_ms\":%lld,\"uptime_ms\":%lld,\"synced\":%s,"
+             "\"ntp_enable\":%u,\"ntp_server\":\"%s\",\"tz_offset_min\":%d}",
+             (long long)epoch_ms, (long long)uptime_ms, synced ? "true" : "false",
+             (unsigned)cfg->ntp_enable, cfg->ntp_server, (int)cfg->tz_offset_min);
+    return reply_json(req, "200 OK", json);
+}
+
+static esp_err_t handle_post_system_time(httpd_req_t *req)
+{
+    if (!auth_check(req)) {
+        return reject_unauthorized(req);
+    }
+    if (!request_is_same_origin(req)) {
+        return reply_json(req, "403 Forbidden",
+                          "{\"error\":\"Cross-origin request rejected\"}");
+    }
+
+    // The request body is optional and ignored.
+    char body[64];
+    (void)read_body(req, body, sizeof(body));
+
+    if (!ntp_time_resync()) {
+        return reply_json(req, "409 Conflict", "{\"error\":\"NTP disabled\"}");
+    }
+    return reply_json(req, "202 Accepted",
+                      "{\"message\":\"NTP re-sync started\"}");
+}
+
 static esp_err_t handle_get_ext_status(httpd_req_t *req)
 {
     if (!auth_check(req)) {
@@ -872,6 +966,8 @@ void init_http_server(void)
         {"/wifi/connect", HTTP_METHOD_POST, handle_wifi_connect},
         {"/wifi/status", HTTP_METHOD_GET, handle_wifi_status},
         {"/wifi/disconnect", HTTP_METHOD_POST, handle_wifi_disconnect},
+        {"/system/time", HTTP_METHOD_GET, handle_get_system_time},
+        {"/system/time", HTTP_METHOD_POST, handle_post_system_time},
         {"/system/reboot", HTTP_METHOD_POST, handle_system_reboot},
         {"/system/reset", HTTP_METHOD_POST, handle_system_reset},
         {"/ext/status", HTTP_METHOD_GET, handle_get_ext_status},

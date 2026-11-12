@@ -28,14 +28,15 @@
 
 ## Возможности
 
-- **Два UART** — консоль UART0 через встроенный USB Serial/JTAG (115200) и
-  мост датчиков UART1 (9600).
+- **Два UART** — UART0 (GPIO16/17) и UART1 (GPIO4/5) для внешних устройств;
+  скорость настраивается (`baud_rate`/`uart1_baud_rate`, по умолчанию
+  115200/9600). Консоль прошивки выводится через USB Serial/JTAG.
 - **SD-карта** по SPI с файловой системой FAT (чтение / запись / список).
 - **Wi-Fi AP + STA** — встроенная SoftAP для локального доступа плюс станция,
   которая умеет сканировать и подключаться к внешней сети.
 - **HTTP REST API** на порту 80 с JSON-полезной нагрузкой.
-- **Веб-интерфейс** — одностраничное приложение, отдаваемое из раздела SPIFFS
-  (SD-карта не требуется), с вкладками Dashboard, Configuration, WiFi, Sensors,
+- **Веб-интерфейс** — одностраничное приложение, встроенное в образ прошивки и
+  отдаваемое из флеша (SD-карта не требуется), с вкладками Dashboard, Configuration, WiFi, Sensors,
   SD Card, Files, Update, External, System Log и Account. Доступ защищён
   cookie-сессией (по умолчанию `admin` / `admin`).
 - **OTA-обновления** по A/B-схеме (`ota_0` + `ota_1`): манифест
@@ -46,6 +47,12 @@
 - **Экспорт настроек** в JSON-файл (`GET /config/export`, без секретов).
 - **I2C-датчики** — SHT21 (температура / влажность) и INA219 / INA226
   (напряжение шины, напряжение шунта, ток, мощность).
+- **NTP-синхронизация и реальные метки времени** — SNTP-клиент (`ntp_enable`,
+  `ntp_server`, по умолчанию `pool.ntp.org`) с фиксированным смещением UTC
+  (`tz_offset_min`, по умолчанию 180 = МСК, без DST). После синхронизации
+  реальное время пишется в `uarN.log`, CSV датчиков, `exported_at` и системные
+  логи ESP_LOG; до неё используются метки аптайма. Управление —
+  `GET/POST /system/time`, в веб-интерфейсе — карточка NTP и строка «Time».
 - **Постоянная конфигурация** в NVS с семантикой частичного обновления.
 - **Переназначение GPIO на лету** с проверкой возможностей пина и конфликтов.
 - **Двойные telnet-мосты**, ретранслирующие TCP в UART0 и UART1, каждый на
@@ -55,9 +62,9 @@
   (`nc`) увидят 6 приветственных байт. Мосты слушают `0.0.0.0`, то есть
   доступны и из SoftAP, и из LAN; аутентификации нет, поэтому не выставляйте их
   порты в интернет.
-- **Опциональное логирование на SD-карту**: трафик UART (`uar0.log` / `uar1.log`)
-  и показания датчиков (`sht21.csv` / `ina219.csv` / `ina226.csv` / `env.csv`) с
-  ротацией по 1 МБ на FatFs с поддержкой exFAT.
+- **Опциональное логирование на SD-карту**: трафик UART (`uar0.log` / `uar1.log`
+  в режимах raw/text/hexdump) и показания датчиков (`sht21.csv` / `ina219.csv` /
+  `ina226.csv` / `env.csv`) с ротацией по 1 МБ на FatFs с поддержкой exFAT.
 - **Публикация датчиков в MQTT** (один JSON-топик на датчик, QoS 0).
 - **Управление внешним устройством** — два GPIO для питания (удерживаемый
   уровень) и сброса (импульс заданной длительности), настраиваемая полярность,
@@ -129,8 +136,8 @@ idf.py -p /dev/ttyACM0 monitor
 ```
 gateway/
 ├── CMakeLists.txt          # Определение проекта верхнего уровня
-├── partitions.csv          # Пользовательская раскладка 4 МБ (ota_0 1.625M + ota_1 1.625M + 640K SPIFFS)
-├── sdkconfig.defaults      # Значения SDK по умолчанию (target, console, SPIFFS, ...)
+├── partitions.csv          # Пользовательская раскладка 4 МБ (ota_0 1.625M + ota_1 1.625M + 640K резерв)
+├── sdkconfig.defaults      # Значения SDK по умолчанию (target, console, ...)
 ├── build_and_flash.sh      # Канонический скрипт build/flash/monitor/test
 ├── main/
 │   ├── main.c              # app_main(): порядок инициализации подсистем
@@ -141,11 +148,12 @@ gateway/
 │   ├── sd_handler.[ch]     # SD/SPI + файловая система FAT
 │   ├── sensor_handler.[ch] # Чтение SHT21 / INA219 / INA226, MQTT
 │   ├── http_server.[ch]    # REST-сервер + регистрация эндпоинтов
-│   ├── web_handlers.[ch]   # Монтирование SPIFFS + отдача статики
+│   ├── web_handlers.[ch]   # Отдача встроенного SPA из образа приложения
 │   ├── log_handler.[ch]    # Кольцевой буфер лога в RAM + GET /logs
 │   ├── wifi_ap.[ch]        # Инициализация Wi-Fi (режим AP+STA, SoftAP)
 │   ├── wifi_scan.[ch]      # STA: сканирование/подключение/статус/отключение
 │   ├── system_handler.[ch] # Обработчики перезагрузки / сброса к заводским
+│   ├── ntp_time.[ch]       # SNTP-клиент, форматирование меток времени
 │   ├── ota_handler.[ch]    # Манифест, semver, SHA-256, esp_ota_*, откат
 │   ├── self_test.[ch]      # HTTP self-test при загрузке + подтверждение OTA
 │   └── telnet_bridge.[ch]  # Ретрансляторы TCP -> UART0/UART1 (+ лог на SD)
@@ -167,7 +175,7 @@ gateway/
 
 | Метод | Путь                 | Описание                                        | Успех |
 |-------|----------------------|-------------------------------------------------|-------|
-| GET   | `/`                  | Веб-интерфейс (SPA из SPIFFS)                   | 200   |
+| GET   | `/`                  | Веб-интерфейс (встроенный SPA)                  | 200   |
 | GET   | `/config`            | Текущая конфигурация                            | 200   |
 | POST  | `/config`            | Частичное обновление конфигурации               | 200   |
 | GET   | `/sensor`            | Текущие показания датчиков                      | 200   |
@@ -205,6 +213,7 @@ curl http://192.168.4.1/config
 ```json
 {
   "baud_rate": 115200,
+  "uart1_baud_rate": 9600,
   "uart0_enable": 1,
   "uart1_enable": 1,
   "sd_enable": 1,
@@ -216,6 +225,8 @@ curl http://192.168.4.1/config
   "telnet1_port": 23,
   "uart0_sd_log": 0,
   "uart1_sd_log": 0,
+  "uart0_sd_log_fmt": 1,
+  "uart1_sd_log_fmt": 1,
   "sht21_sd_log": 0,
   "ina219_sd_log": 0,
   "ina226_sd_log": 0,
@@ -373,14 +384,19 @@ curl -X POST http://192.168.4.1/ext/reset
 ### Система
 
 ```bash
+curl http://192.168.4.1/system/time             # -> 200, состояние часов и NTP
+curl -X POST http://192.168.4.1/system/time     # -> 202 (или 409, если NTP выключен)
 curl -X POST http://192.168.4.1/system/reboot   # -> 200, затем перезагрузка
 curl -X POST http://192.168.4.1/system/reset    # -> 200, стереть NVS, перезагрузка
 ```
 
-Оба обработчика отправляют HTTP-ответ **до** перезапуска, поэтому клиент всегда
-получает `200`. Это разрушающие эндпоинты: они проверяют заголовок `Origin` и
-отклоняют кросс-доменные запросы (запросы без `Origin`, например из `curl`,
-проходят) — базовая защита от CSRF.
+`GET /system/time` возвращает `epoch_ms`, `uptime_ms`, `synced` и настройки
+NTP; `POST /system/time` запускает внеочередную синхронизацию. Обработчики
+`reboot`/`reset` отправляют HTTP-ответ **до** перезапуска, поэтому клиент
+всегда получает `200`. Это разрушающие эндпоинты: они проверяют заголовок
+`Origin` и отклоняют кросс-доменные запросы (запросы без `Origin`, например из
+`curl`, проходят) — базовая защита от CSRF; та же проверка есть у
+`POST /system/time`.
 
 ## Распиновка GPIO
 
@@ -389,10 +405,10 @@ curl -X POST http://192.168.4.1/system/reset    # -> 200, стереть NVS, п
 
 | Функция    | GPIO по умолчанию | Направление | Примечания                          |
 |------------|-------------------|-------------|-------------------------------------|
-| UART0 TX   | 16                | OUT         | Консоль USB Serial/JTAG (115200)    |
-| UART0 RX   | 17                | IN          | Консоль USB Serial/JTAG             |
-| UART1 TX   | 4                 | OUT         | Мост датчиков (9600)                |
-| UART1 RX   | 5                 | IN          | Мост датчиков                       |
+| UART0 TX   | 16                | OUT         | Внешнее устройство (115200)         |
+| UART0 RX   | 17                | IN          | Внешнее устройство                  |
+| UART1 TX   | 4                 | OUT         | Внешнее устройство (9600)           |
+| UART1 RX   | 5                 | IN          | Внешнее устройство                  |
 | SDSPI CS   | 18                | OUT         | Выбор кристалла SD                  |
 | SDSPI MOSI | 1                 | OUT         | Данные SD (out)                     |
 | SDSPI MISO | 3                 | IN          | Данные SD (in)                      |
@@ -473,8 +489,8 @@ password '...'`). Если на устройстве остался старый
 ## Веб-интерфейс
 
 SPA — это единый самодостаточный файл `web/index.html` (инлайн CSS + JS),
-встраиваемый в раздел SPIFFS на этапе сборки и отдаваемый обработчиком
-статики HTTP-сервера. Откройте **http://192.168.4.1** после подключения к AP.
+встраиваемый в образ приложения на этапе сборки (`EMBED_FILES`) и отдаваемый
+обработчиком статики HTTP-сервера. Обновляется вместе с прошивкой по OTA. Откройте **http://192.168.4.1** после подключения к AP.
 Доступны вкладки Dashboard, Configuration, WiFi, Sensors, SD Card, Files,
 Update, External, System Log и Account. Вход — `admin` и пароль,
 сгенерированный при первой загрузке (см. журнал). Вкладка
@@ -496,15 +512,15 @@ USB. Схема A/B: разделы `ota_0` и `ota_1` по 1.625 МБ; новы
 
 ```bash
 mkdir -p firmware
-cp build/gateway.bin firmware/gateway-1.5.0.bin
+cp build/gateway.bin firmware/gateway-1.8.0.bin
 python3 tools/ota_server.py --root ./firmware \
-    --version 1.5.0 --filename gateway-1.5.0.bin --bind 0.0.0.0 --port 8000
+    --version 1.8.0 --filename gateway-1.8.0.bin --bind 0.0.0.0 --port 8000
 ```
 
 Манифест:
 
 ```json
-{"version":"1.5.0","filename":"gateway-1.5.0.bin","sha256":"<64 hex>"}
+{"version":"1.8.0","filename":"gateway-1.8.0.bin","sha256":"<64 hex>"}
 ```
 
 SHA-256 считается автоматически (или задаётся через `--sha256`). Сервер не
@@ -539,7 +555,7 @@ API: `GET /ota/slots` — список слотов; `POST /ota/slot` с тел�
 
 ### Версия прошивки
 
-Источник версии — `project(gateway VERSION 1.5.0)` в корневом `CMakeLists.txt`
+Источник версии — `project(gateway VERSION 1.8.0)` в корневом `CMakeLists.txt`
 (синхронно с `CHANGELOG.md`). Не создавайте файл `version.txt`: он имеет
 приоритет над `VERSION`.
 
@@ -566,8 +582,9 @@ API: `GET /ota/slots` — список слотов; `POST /ota/slot` с тел�
 ./build_and_flash.sh flash
 ```
 
-Смещение `nvs` (0x9000) не меняется, поэтому настройки сохраняются. Раздел
-SPIFFS (0x360000) перезаписывается тем же образом веб-интерфейса.
+Смещение `nvs` (0x9000) не меняется, поэтому настройки сохраняются. С 1.7.0
+веб-интерфейс встроен в образ приложения, поэтому раздел `spiffs` (0x360000)
+не используется и остаётся зарезервированным.
 **Не используйте `erase-flash`**. После прошивки устройство загружается с
 `ota_0` (1.4.3), прежний слот с 1.4.2 становится `ota_1` и доступен для
 отката, а последующие OTA-обновления работают штатно.
@@ -578,9 +595,10 @@ SPIFFS (0x360000) перезаписывается тем же образом в
 
 | Ключ            | Тип  | По умолчанию | Примечания                         |
 |-----------------|------|--------------|------------------------------------|
-| `baud_rate`     | u32  | `115200`     | Скорость консоли UART0             |
-| `uart0_enable`  | u8   | `1`          | Консоль UART0 вкл/выкл             |
-| `uart1_enable`  | u8   | `1`          | Мост датчиков UART1 вкл/выкл       |
+| `baud_rate`     | u32  | `115200`     | Скорость UART0 (белый список)      |
+| `u1_baud`       | u32  | `9600`       | Скорость UART1 (белый список)      |
+| `uart0_enable`  | u8   | `1`          | UART0 вкл/выкл                      |
+| `uart1_enable`  | u8   | `1`          | UART1 вкл/выкл                      |
 | `sd_enable`     | u8   | `1`          | Подсистема SD-карты вкл/выкл       |
 | `sensor_enable` | u8   | `1`          | Подсистема датчиков вкл/выкл       |
 | `led_enable`    | u8   | `1`          | Статусные светодиоды вкл/выкл      |
@@ -590,6 +608,8 @@ SPIFFS (0x360000) перезаписывается тем же образом в
 | `telnet1_port`  | u16  | `23`         | TCP-порт моста UART1 (1-65535)     |
 | `u0_sd_log`     | u8   | `0`          | Логировать трафик UART0 в `/sdcard/uar0.log` |
 | `u1_sd_log`     | u8   | `0`          | Логировать трафик UART1 в `/sdcard/uar1.log` |
+| `u0_log_fmt`    | u8   | `1`          | Формат `uar0.log`: 0=raw, 1=text, 2=hexdump |
+| `u1_log_fmt`    | u8   | `1`          | Формат `uar1.log`: 0=raw, 1=text, 2=hexdump |
 | `sht21_sd`      | u8   | `0`          | Писать строки SHT21 в `/sdcard/sht21.csv`  |
 | `ina219_sd`     | u8   | `0`          | Писать строки INA219 в `/sdcard/ina219.csv` |
 | `ina226_sd`     | u8   | `0`          | Писать строки INA226 в `/sdcard/ina226.csv` |
@@ -665,14 +685,15 @@ writes to an SD card, and reads I2C environmental / power-monitoring sensors.
 
 ## Features
 
-- **Dual UART** — UART0 console over native USB Serial/JTAG (115200), UART1
-  sensor bridge (9600).
+- **Dual UART** — UART0 (GPIO16/17) and UART1 (GPIO4/5) for external devices;
+  the baud rate is configurable (`baud_rate`/`uart1_baud_rate`, default
+  115200/9600). The firmware console is USB Serial/JTAG.
 - **SD card** over SPI with a FAT filesystem (read/write/list).
 - **Wi-Fi AP + STA** — built-in SoftAP for local access plus a station that can
   scan and connect to an external network.
 - **HTTP REST API** on port 80 with JSON payloads.
-- **Web UI** — a single-page app served from an on-board SPIFFS partition
-  (no SD card required), with Dashboard, Configuration, WiFi, Sensors, SD Card,
+- **Web UI** — a single-page app embedded in the firmware image and served from
+  flash (no SD card required), with Dashboard, Configuration, WiFi, Sensors, SD Card,
   Files, Update, External, System Log and Account tabs. Access is protected by
   a cookie session (default `admin` / `admin`).
 - **OTA updates** with an A/B layout (`ota_0` + `ota_1`): `version.json`
@@ -683,6 +704,12 @@ writes to an SD card, and reads I2C environmental / power-monitoring sensors.
 - **Settings export** to a JSON file (`GET /config/export`, no secrets).
 - **I2C sensors** — SHT21 (temperature / humidity) and INA219 / INA226
   (bus voltage, shunt voltage, current, power).
+- **NTP time sync and real timestamps** — an SNTP client (`ntp_enable`,
+  `ntp_server`, default `pool.ntp.org`) with a fixed UTC offset
+  (`tz_offset_min`, default 180 = Moscow time, no DST). After synchronization
+  the real time is written to `uarN.log`, sensor CSVs, `exported_at` and the
+  ESP_LOG lines; before it, uptime stamps are used. Controlled via
+  `GET/POST /system/time`, with an NTP card and a "Time" row in the web UI.
 - **Persistent configuration** in NVS with partial-update semantics.
 - **Runtime GPIO reassignment** with capability and conflict validation.
 - **Dual telnet bridges** relaying TCP to UART0 and UART1, each on its own port.
@@ -692,9 +719,9 @@ writes to an SD card, and reads I2C environmental / power-monitoring sensors.
   6 welcome bytes. The bridges listen on `0.0.0.0`, so they are reachable both
   from the SoftAP and from the LAN; they have no authentication, so do not
   expose their ports to the internet.
-- **Optional SD-card logging** of UART traffic (`uar0.log` / `uar1.log`) and
-  per-sensor readings (`sht21.csv` / `ina219.csv` / `ina226.csv` / `env.csv`),
-  with 1 MB rotation, on an exFAT-capable FatFs.
+- **Optional SD-card logging** of UART traffic (`uar0.log` / `uar1.log` in
+  raw/text/hexdump modes) and per-sensor readings (`sht21.csv` / `ina219.csv` /
+  `ina226.csv` / `env.csv`), with 1 MB rotation, on an exFAT-capable FatFs.
 - **MQTT publishing** of sensor readings (one JSON topic per sensor, QoS 0).
 - **External device control** — two GPIOs for power (held level) and reset
   (pulse of a configurable width), configurable polarity, power state persisted
@@ -765,8 +792,8 @@ Environment overrides: `IDF_PATH_OVERRIDE`, `IDF_TOOLS_PATH`, `PORT`,
 ```
 gateway/
 ├── CMakeLists.txt          # Top-level project definition
-├── partitions.csv          # Custom 4 MB layout (ota_0 1.625M + ota_1 1.625M + 640K SPIFFS)
-├── sdkconfig.defaults      # SDK defaults (target, console, SPIFFS, ...)
+├── partitions.csv          # Custom 4 MB layout (ota_0 1.625M + ota_1 1.625M + 640K reserved)
+├── sdkconfig.defaults      # SDK defaults (target, console, ...)
 ├── build_and_flash.sh      # Canonical build/flash/monitor/test script
 ├── main/
 │   ├── main.c              # app_main(): subsystem init order
@@ -777,11 +804,12 @@ gateway/
 │   ├── sd_handler.[ch]     # SD/SPI + FAT filesystem
 │   ├── sensor_handler.[ch] # SHT21 / INA219 / INA226 readers
 │   ├── http_server.[ch]    # REST server + endpoint registration
-│   ├── web_handlers.[ch]   # SPIFFS mount + static catch-all
+│   ├── web_handlers.[ch]   # Embedded SPA served from the app image
 │   ├── log_handler.[ch]    # In-RAM log ring buffer + GET /logs
 │   ├── wifi_ap.[ch]        # Wi-Fi init (AP+STA mode, SoftAP)
 │   ├── wifi_scan.[ch]      # STA scan/connect/status/disconnect
 │   ├── system_handler.[ch] # Reboot / factory-reset handlers
+│   ├── ntp_time.[ch]       # SNTP client and timestamp formatting
 │   ├── ota_handler.[ch]    # Manifest, semver, SHA-256, esp_ota_*, rollback
 │   ├── self_test.[ch]      # Boot-time HTTP self-test + OTA confirmation
 │   └── telnet_bridge.[ch]  # TCP -> UART0/UART1 relays (+ optional SD log)
@@ -805,7 +833,7 @@ device's own IP addresses are trusted so the on-boot self-test keeps working.
 
 | Method | Path                 | Description                                    | Success |
 |--------|----------------------|------------------------------------------------|---------|
-| GET    | `/`                  | Web UI (SPA from SPIFFS)                       | 200     |
+| GET    | `/`                  | Web UI (embedded SPA)                          | 200     |
 | GET    | `/config`            | Current configuration                          | 200     |
 | POST   | `/config`            | Partial configuration update                   | 200     |
 | GET    | `/sensor`            | Current sensor readings                        | 200     |
@@ -847,6 +875,7 @@ curl http://192.168.4.1/config
 ```json
 {
   "baud_rate": 115200,
+  "uart1_baud_rate": 9600,
   "uart0_enable": 1,
   "uart1_enable": 1,
   "sd_enable": 1,
@@ -858,6 +887,8 @@ curl http://192.168.4.1/config
   "telnet1_port": 23,
   "uart0_sd_log": 0,
   "uart1_sd_log": 0,
+  "uart0_sd_log_fmt": 1,
+  "uart1_sd_log_fmt": 1,
   "sht21_sd_log": 0,
   "ina219_sd_log": 0,
   "ina226_sd_log": 0,
@@ -1010,14 +1041,19 @@ in the HTTP handler and blocks it for the pulse width (up to 5000 ms).
 ### System
 
 ```bash
+curl http://192.168.4.1/system/time             # -> 200, clock and NTP state
+curl -X POST http://192.168.4.1/system/time     # -> 202 (or 409 when NTP is off)
 curl -X POST http://192.168.4.1/system/reboot   # -> 200, then reboot
 curl -X POST http://192.168.4.1/system/reset    # -> 200, erase NVS, reboot
 ```
 
-Both handlers send the HTTP response **before** restarting so the client always
-receives a `200`. These destructive endpoints check the `Origin` header and
-reject cross-origin requests (requests without an `Origin`, e.g. from `curl`,
-pass) — a basic CSRF guard.
+`GET /system/time` returns `epoch_ms`, `uptime_ms`, `synced` and the NTP
+settings; `POST /system/time` triggers an out-of-schedule synchronization. The
+`reboot`/`reset` handlers send the HTTP response **before** restarting so the
+client always receives a `200`. These destructive endpoints check the `Origin`
+header and reject cross-origin requests (requests without an `Origin`, e.g.
+from `curl`, pass) — a basic CSRF guard; `POST /system/time` uses the same
+check.
 
 ## GPIO Pinout
 
@@ -1026,10 +1062,10 @@ persisted to NVS.
 
 | Function    | Default GPIO | Direction | Notes                              |
 |-------------|--------------|-----------|------------------------------------|
-| UART0 TX    | 16           | OUT       | USB Serial/JTAG console (115200)   |
-| UART0 RX    | 17           | IN        | USB Serial/JTAG console            |
-| UART1 TX    | 4            | OUT       | Sensor bridge (9600)               |
-| UART1 RX    | 5            | IN        | Sensor bridge                      |
+| UART0 TX    | 16           | OUT       | External device (115200)           |
+| UART0 RX    | 17           | IN        | External device                    |
+| UART1 TX    | 4            | OUT       | External device (9600)             |
+| UART1 RX    | 5            | IN        | External device                    |
 | SDSPI CS    | 18           | OUT       | SD chip select                     |
 | SDSPI MOSI  | 1            | OUT       | SD data out                        |
 | SDSPI MISO  | 3            | IN        | SD data in                         |
@@ -1105,9 +1141,9 @@ After 5 failed logins `/auth/login` is locked for 60 seconds.
 
 ## Web Interface
 
-The SPA is a single self-contained `web/index.html` (inline CSS + JS) baked into
-the SPIFFS partition at build time and served by the HTTP server's catch-all
-handler. Open **http://192.168.4.1** after joining the AP. It has Dashboard,
+The SPA is a single self-contained `web/index.html` (inline CSS + JS) embedded
+into the application image at build time (`EMBED_FILES`) and served by the HTTP
+server's catch-all handler. It is updated together with the firmware over OTA. Open **http://192.168.4.1** after joining the AP. It has Dashboard,
 Configuration, WiFi, Sensors, SD Card, Files, Update, External, System Log and
 Account tabs. Sign in with `admin` and the password generated on first boot
 (see the log). The Configuration tab renders GPIO
@@ -1129,15 +1165,15 @@ previous slot.
 
 ```bash
 mkdir -p firmware
-cp build/gateway.bin firmware/gateway-1.5.0.bin
+cp build/gateway.bin firmware/gateway-1.8.0.bin
 python3 tools/ota_server.py --root ./firmware \
-    --version 1.5.0 --filename gateway-1.5.0.bin --bind 0.0.0.0 --port 8000
+    --version 1.8.0 --filename gateway-1.8.0.bin --bind 0.0.0.0 --port 8000
 ```
 
 Manifest:
 
 ```json
-{"version":"1.5.0","filename":"gateway-1.5.0.bin","sha256":"<64 hex>"}
+{"version":"1.8.0","filename":"gateway-1.8.0.bin","sha256":"<64 hex>"}
 ```
 
 The SHA-256 is computed automatically (or supplied with `--sha256`). The server
@@ -1173,7 +1209,7 @@ in progress.
 
 ### Firmware version
 
-The version source is `project(gateway VERSION 1.5.0)` in the root
+The version source is `project(gateway VERSION 1.8.0)` in the root
 `CMakeLists.txt` (kept in sync with `CHANGELOG.md`). Do not add a `version.txt`
 file: it takes precedence over `VERSION`.
 
@@ -1200,8 +1236,9 @@ Migrating that layout is a **one-time USB flash**:
 ./build_and_flash.sh flash
 ```
 
-The `nvs` offset (0x9000) is unchanged, so settings survive. The SPIFFS partition
-(0x360000) is rewritten with the same web UI image. **Do not use `erase-flash`**.
+The `nvs` offset (0x9000) is unchanged, so settings survive. Since 1.7.0 the web
+UI is embedded in the app image, so the `spiffs` partition (0x360000) is unused
+and remains reserved. **Do not use `erase-flash`**.
 After flashing the device boots from `ota_0` (1.4.3), the previous 1.4.2 slot
 becomes `ota_1` and remains available for rollback, and later OTA updates work
 normally.
@@ -1212,9 +1249,10 @@ Configuration lives in the NVS `storage` namespace. Keys (≤15 chars):
 
 | Key             | Type | Default      | Notes                              |
 |-----------------|------|--------------|------------------------------------|
-| `baud_rate`     | u32  | `115200`     | UART0 console baud                  |
-| `uart0_enable`  | u8   | `1`          | UART0 console on/off                |
-| `uart1_enable`  | u8   | `1`          | UART1 sensor bridge on/off          |
+| `baud_rate`     | u32  | `115200`     | UART0 baud (whitelisted)            |
+| `u1_baud`       | u32  | `9600`       | UART1 baud (whitelisted)            |
+| `uart0_enable`  | u8   | `1`          | UART0 on/off                        |
+| `uart1_enable`  | u8   | `1`          | UART1 on/off                        |
 | `sd_enable`     | u8   | `1`          | SD card subsystem on/off            |
 | `sensor_enable` | u8   | `1`          | Sensor subsystem on/off             |
 | `led_enable`    | u8   | `1`          | Status LEDs on/off                  |
@@ -1224,6 +1262,8 @@ Configuration lives in the NVS `storage` namespace. Keys (≤15 chars):
 | `telnet1_port`  | u16  | `23`         | UART1 bridge TCP port (1-65535)     |
 | `u0_sd_log`     | u8   | `0`          | Log UART0 traffic to `/sdcard/uar0.log`  |
 | `u1_sd_log`     | u8   | `0`          | Log UART1 traffic to `/sdcard/uar1.log`  |
+| `u0_log_fmt`    | u8   | `1`          | `uar0.log` format: 0=raw, 1=text, 2=hexdump |
+| `u1_log_fmt`    | u8   | `1`          | `uar1.log` format: 0=raw, 1=text, 2=hexdump |
 | `sht21_sd`      | u8   | `0`          | Log SHT21 rows to `/sdcard/sht21.csv`    |
 | `ina219_sd`     | u8   | `0`          | Log INA219 rows to `/sdcard/ina219.csv`  |
 | `ina226_sd`     | u8   | `0`          | Log INA226 rows to `/sdcard/ina226.csv`  |

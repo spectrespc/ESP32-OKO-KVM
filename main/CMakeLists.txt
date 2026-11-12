@@ -14,9 +14,13 @@ if(NOT HTTP_TESTS_GEN_RC EQUAL 0)
 endif()
 
 idf_component_register(
-    SRCS "main.c" "pins.c" "uart_handler.c" "http_server.c" "sd_handler.c" "sensor_handler.c" "config.c" "wifi_ap.c" "wifi_scan.c" "self_test.c" "pin_validation.c" "telnet_bridge.c" "web_handlers.c" "log_handler.c" "system_handler.c" "ext_control.c" "status_led.c" "auth_handler.c" "ota_handler.c"
+    SRCS "main.c" "pins.c" "uart_handler.c" "http_server.c" "sd_handler.c" "sensor_handler.c" "config.c" "wifi_ap.c" "wifi_scan.c" "self_test.c" "pin_validation.c" "telnet_bridge.c" "web_handlers.c" "log_handler.c" "system_handler.c" "ext_control.c" "status_led.c" "auth_handler.c" "ota_handler.c" "ntp_time.c"
     INCLUDE_DIRS "." "${CMAKE_CURRENT_BINARY_DIR}"
-    REQUIRES esp_driver_uart esp_driver_sdspi fatfs esp_http_server nvs_flash esp_wifi esp_driver_spi esp_driver_i2c esp_driver_gpio esp_timer esp_netif esp_http_client lwip cjson spiffs mqtt mbedtls app_update
+    REQUIRES esp_driver_uart esp_driver_sdspi fatfs esp_http_server nvs_flash esp_wifi esp_driver_spi esp_driver_i2c esp_driver_gpio esp_timer esp_netif esp_http_client lwip cjson mqtt mbedtls app_update
+    # The SPA is linked into the application image and served from flash, so
+    # every OTA update ships the matching web UI. No separate SPIFFS image is
+    # built or flashed any more.
+    EMBED_FILES "${CMAKE_SOURCE_DIR}/web/index.html"
 )
 
 # Enable exFAT support in the FatFs library. IDF v6.0.2 hardcodes
@@ -37,6 +41,3 @@ if(EXISTS "${_ffconf}")
 else()
     message(WARNING "fatfs ffconf.h not found at ${_ffconf}; exFAT support not enabled")
 endif()
-
-# Build the SPA (web/) into a SPIFFS image and flash it with the app.
-spiffs_create_partition_image(spiffs ${CMAKE_SOURCE_DIR}/web FLASH_IN_PROJECT)
